@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .core import AUTO_BEGIN, AUTO_END
+from .core import AUTO_BEGIN, AUTO_END, parse_trace_lines
 
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
@@ -26,6 +26,8 @@ SKILL_MISS_RE = re.compile(
 	r"skill-miss:\s*skill=([a-z0-9\-]+)(?:\s+reason=([a-z0-9_\-]+))?(?:\s+section=([a-zA-Z0-9_.\-]+))?",
 	re.IGNORECASE,
 )
+
+_MAX_FEEDBACK_PAGES = 20
 
 
 @dataclass
@@ -307,21 +309,27 @@ def collect_feedback(repo: str, token: str, since_days: int, output_path: Path) 
 	now = dt.datetime.now(dt.timezone.utc)
 	since = now - dt.timedelta(days=since_days)
 	api = f"https://api.github.com/repos/{repo}"
-	url = f"{api}/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+	url: str | None = f"{api}/pulls?state=closed&sort=updated&direction=desc&per_page=100"
 	pulls: list[dict[str, Any]] = []
+	page_count = 0
 
 	while url:
+		if page_count >= _MAX_FEEDBACK_PAGES:
+			print(
+				f"::warning::collect-feedback: reached {_MAX_FEEDBACK_PAGES}-page limit; some PRs may be excluded.",
+				file=sys.stderr,
+			)
+			break
+		page_count += 1
 		items, link = github_get(url, token)
 		if not isinstance(items, list):
 			break
-		stop = False
 		for pr in items:
 			merged_at = pr.get("merged_at")
 			if not merged_at:
 				continue
 			merged_time = dt.datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
 			if merged_time < since:
-				stop = True
 				continue
 			number = pr["number"]
 			issue_comments, _ = github_get(f"{api}/issues/{number}/comments?per_page=100", token)
@@ -339,8 +347,6 @@ def collect_feedback(repo: str, token: str, since_days: int, output_path: Path) 
 					"reviews": reviews or [],
 				}
 			)
-		if stop:
-			break
 		url = parse_next_link(link)
 
 	data = {
@@ -367,23 +373,7 @@ def extract_trace_records(pr: dict[str, Any]) -> list[dict[str, Any]]:
 	body = pr.get("body") or ""
 	records: list[dict[str, Any]] = []
 	for block in TRACE_BLOCK_RE.findall(body):
-		for raw_line in block.splitlines():
-			line = raw_line.strip()
-			if not line:
-				continue
-			try:
-				record = json.loads(line)
-			except json.JSONDecodeError:
-				continue
-			required = ("trace_id", "skill", "file", "section_id", "line_start", "reason")
-			if any(field not in record for field in required):
-				continue
-			try:
-				record["line_start"] = int(record["line_start"])
-				record["line_end"] = int(record.get("line_end") or record["line_start"])
-			except (TypeError, ValueError):
-				continue
-			record["trace_id"] = str(record["trace_id"])
+		for record in parse_trace_lines(block):
 			record["trace_key"] = f"{pr['number']}:{record['trace_id']}"
 			record["pr_number"] = pr["number"]
 			records.append(record)
@@ -476,13 +466,17 @@ def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 		den = tp + fp
 		precision = (tp / den) if den > 0 else None
 		fp_rate = (fp / den) if den > 0 else None
+		recall_den = tp + fn
+		recall = (tp / recall_den) if recall_den > 0 else None
 		metrics[skill] = {
 			"tp": tp,
 			"fp": fp,
 			"fn": fn,
 			"usage": counts["usage"],
 			"fix_needed": counts["fix_needed"],
-			"precision_proxy": precision,
+			"precision": precision,
+			"precision_proxy": precision,  # backward-compat alias; deprecated
+			"recall": recall,
 			"fp_rate": fp_rate,
 			"fp_reasons": dict(counts["fp_reasons"]),
 			"miss_reasons": dict(counts["miss_reasons"]),
@@ -559,14 +553,15 @@ def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 		"",
 		"## Skill metrics",
 		"",
-		"| Skill | Usage | TP | FP | Fix needed | Misses | Precision proxy |",
-		"|---|---:|---:|---:|---:|---:|---:|",
+		"| Skill | Usage | TP | FP | Fix needed | Misses | Precision | Recall |",
+		"|---|---:|---:|---:|---:|---:|---:|---:|",
 	]
 	for skill in sorted(metrics.keys()):
 		m = metrics[skill]
-		precision = "n/a" if m["precision_proxy"] is None else f"{m['precision_proxy']:.2f}"
+		precision = "n/a" if m["precision"] is None else f"{m['precision']:.2f}"
+		recall = "n/a" if m["recall"] is None else f"{m['recall']:.2f}"
 		lines.append(
-			f"| `{skill}` | {m['usage']} | {m['tp']} | {m['fp']} | {m['fix_needed']} | {m['fn']} | {precision} |"
+			f"| `{skill}` | {m['usage']} | {m['tp']} | {m['fp']} | {m['fix_needed']} | {m['fn']} | {precision} | {recall} |"
 		)
 	lines.extend(["", "## Disputed sections", ""])
 	disputed = output["disputed_sections"]

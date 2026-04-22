@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
 	fallback = subparsers.add_parser("fallback", help="Publish committed branch traces into the PR body.")
 	fallback.add_argument("--repo", required=True)
 	fallback.add_argument("--pr-number", type=int, required=True)
-	fallback.add_argument("--token", required=True)
+	fallback.add_argument("--token")
 	fallback.set_defaults(func=cmd_fallback)
 
 	return parser
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
 	args = parser.parse_args(argv)
 	try:
 		return args.func(args)
-	except RuntimeError as error:
+	except (RuntimeError, ValueError) as error:
 		print(str(error), file=sys.stderr)
 		return 1
 

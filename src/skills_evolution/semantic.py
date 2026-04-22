@@ -28,25 +28,28 @@ def top_disputed_sections(output_dir: Path, limit: int = 8) -> list[dict[str, An
 	)[:limit]
 
 
-def extract_excerpt(path: Path, line_start: int, line_end: int, padding: int = 6) -> str:
-	lines = path.read_text(encoding="utf-8").splitlines()
+def extract_excerpt(path: Path, line_start: int, line_end: int, padding: int = 6, *, _lines: list[str] | None = None) -> str:
+	file_lines = _lines if _lines is not None else path.read_text(encoding="utf-8").splitlines()
 	start = max(1, line_start - padding)
-	end = min(len(lines), line_end + padding)
-	return "\n".join(f"{idx:>5}\t{lines[idx - 1]}" for idx in range(start, end + 1))
+	end = min(len(file_lines), line_end + padding)
+	return "\n".join(f"{idx:>5}\t{file_lines[idx - 1]}" for idx in range(start, end + 1))
 
 
 def build_context(repo_root: Path, output_dir: Path, sections: list[dict[str, Any]]) -> Path:
 	context_path = output_dir / "skills-semantic-context.txt"
 	lines = ["## Disputed traced sections", json.dumps(sections, indent=2), "", "## Source excerpts"]
+	file_cache: dict[Path, list[str]] = {}
 	for section in sections:
 		path = repo_root / section["file"]
 		if not path.exists():
 			continue
+		if path not in file_cache:
+			file_cache[path] = path.read_text(encoding="utf-8").splitlines()
 		lines.extend(
 			[
 				"",
 				f"### {section['skill']} :: {section['section_id']} :: {section['file']}:{section['line_start']}-{section['line_end']}",
-				extract_excerpt(path, section["line_start"], section["line_end"]),
+				extract_excerpt(path, section["line_start"], section["line_end"], _lines=file_cache[path]),
 			]
 		)
 	context_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

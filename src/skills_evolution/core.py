@@ -14,6 +14,17 @@ from typing import Any
 from urllib.error import HTTPError
 
 TRACE_FILE = ".github/.skill-trace.ndjson"
+
+try:
+	import fcntl as _fcntl
+
+	def _lock_file(fh: Any) -> None:
+		_fcntl.flock(fh, _fcntl.LOCK_EX)
+
+except ImportError:
+
+	def _lock_file(fh: Any) -> None:  # type: ignore[misc]
+		pass
 AUTO_BEGIN = "<!-- skill-traces:auto:begin -->"
 AUTO_END = "<!-- skill-traces:auto:end -->"
 TRACE_BLOCK_RE = re.compile(
@@ -166,10 +177,21 @@ def validate_trace(trace: dict[str, Any]) -> bool:
 		return False
 	if not re.fullmatch(r"[a-z0-9\-]+", str(trace["skill"])):
 		return False
+	file_path = Path(str(trace["file"]))
+	if file_path.is_absolute() or ".." in file_path.parts:
+		return False
 	try:
 		int(trace["line_start"])
 	except (TypeError, ValueError):
 		return False
+	confidence = trace.get("confidence")
+	if confidence is not None:
+		try:
+			c = float(confidence)
+			if not (0.0 <= c <= 1.0):
+				return False
+		except (TypeError, ValueError):
+			return False
 	return True
 
 
@@ -249,13 +271,27 @@ def append_local_trace(
 	confidence: float | None = None,
 	trace_id: str | None = None,
 ) -> dict[str, Any]:
-	record = {
-		"trace_id": trace_id or uuid.uuid4().hex[:12],
+	if not re.fullmatch(r"[a-z0-9\-]+", skill):
+		raise ValueError(f"Invalid skill name: {skill!r}. Must match [a-z0-9-]+.")
+	file_path = Path(file)
+	if file_path.is_absolute() or ".." in file_path.parts:
+		raise ValueError(f"Invalid file path (absolute or path-traversal): {file!r}")
+	if line_start < 1:
+		raise ValueError(f"line_start must be >= 1, got {line_start}")
+	effective_end = line_end if line_end is not None else line_start
+	if effective_end < line_start:
+		raise ValueError(f"line_end ({line_end}) must be >= line_start ({line_start})")
+	if confidence is not None and not (0.0 <= confidence <= 1.0):
+		raise ValueError(f"confidence must be in [0.0, 1.0], got {confidence}")
+
+	record: dict[str, Any] = {
+		"schema_version": 1,
+		"trace_id": trace_id or uuid.uuid4().hex[:16],
 		"skill": skill,
 		"file": file,
 		"section_id": section_id,
 		"line_start": line_start,
-		"line_end": line_end or line_start,
+		"line_end": effective_end,
 		"reason": reason,
 	}
 	if confidence is not None:
@@ -264,6 +300,7 @@ def append_local_trace(
 	path = trace_file_path(repo_root.resolve())
 	path.parent.mkdir(parents=True, exist_ok=True)
 	with path.open("a", encoding="utf-8") as handle:
+		_lock_file(handle)
 		handle.write(json.dumps(record, sort_keys=True) + "\n")
 	return record
 
@@ -298,8 +335,9 @@ def cleanup_branch_trace_file(repo: str, branch: str, file_sha: str, token: str)
 	}
 	try:
 		gh_request("DELETE", url, token, payload)
-	except HTTPError:
-		pass
+	except HTTPError as error:
+		if error.code not in (404, 409, 422):
+			raise
 
 
 def fetch_pr(repo: str, pr_number: int, token: str) -> dict[str, Any]:
@@ -384,24 +422,27 @@ def publish_local_traces(
 	)
 
 
-def publish_branch_traces(repo: str, pr_number: int, token: str) -> PublishResult:
+def publish_branch_traces(repo: str, pr_number: int, token: str | None) -> PublishResult:
 	"""Fallback path: consume a committed branch trace file from GitHub Actions."""
-	pr = fetch_pr(repo, pr_number, token)
+	resolved_token = resolve_token(token)
+	if not resolved_token:
+		raise RuntimeError("Provide a token, set GH_TOKEN/GITHUB_TOKEN, or authenticate with gh.")
+	pr = fetch_pr(repo, pr_number, resolved_token)
 	body = pr.get("body") or ""
 	head = pr.get("head") or {}
 	head_sha = head.get("sha") or ""
 	head_ref = head.get("ref") or ""
 	head_repo = ((head.get("repo") or {}).get("full_name")) or repo
 
-	traces, file_sha = load_branch_trace_file(head_repo, head_sha, token) if head_sha else ([], None)
+	traces, file_sha = load_branch_trace_file(head_repo, head_sha, resolved_token) if head_sha else ([], None)
 	existing = extract_trace_records(body)
 	if traces:
 		merged = merge_traces(existing, traces)
 		new_body = replace_or_append_block(body, build_block(merged))
 		if new_body != body:
-			patch_pr_body(repo, pr_number, token, new_body)
+			patch_pr_body(repo, pr_number, resolved_token, new_body)
 		if file_sha and head_ref:
-			cleanup_branch_trace_file(head_repo, head_ref, file_sha, token)
+			cleanup_branch_trace_file(head_repo, head_ref, file_sha, resolved_token)
 		total_traces = len(merged)
 	else:
 		total_traces = len(existing)

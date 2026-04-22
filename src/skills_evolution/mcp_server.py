@@ -56,9 +56,15 @@ def read_message() -> dict[str, Any] | None:
 		decoded = line.decode("utf-8").strip()
 		if not decoded:
 			break
-		key, value = decoded.split(":", 1)
+		try:
+			key, value = decoded.split(":", 1)
+		except ValueError:
+			continue
 		headers[key.lower()] = value.strip()
-	length = int(headers.get("content-length", "0"))
+	try:
+		length = int(headers.get("content-length", "0"))
+	except ValueError:
+		return None
 	if length <= 0:
 		return None
 	payload = sys.stdin.buffer.read(length)
@@ -100,6 +106,7 @@ def handle_record_skill_trace(arguments: dict[str, Any]) -> dict[str, Any]:
 		trace_id=arguments.get("traceId"),
 	)
 	return text_tool_result(f"Recorded trace {record['trace_id']} in {core.TRACE_FILE}.")
+
 
 def handle_publish_skill_traces(arguments: dict[str, Any]) -> dict[str, Any]:
 	result = core.publish_local_traces(
