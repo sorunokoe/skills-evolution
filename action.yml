@@ -1,0 +1,25 @@
+name: Publish committed skill traces
+description: Move committed .github/.skill-trace.ndjson entries into the PR hidden body block.
+
+inputs:
+  repo:
+    description: GitHub repository in owner/name format.
+    required: true
+  pr-number:
+    description: Pull request number.
+    required: true
+  token:
+    description: GitHub token with pull-requests write and contents write.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/src
+      run: |
+        python3 -m skills_evolution.cli fallback \
+          --repo "${{ inputs.repo }}" \
+          --pr-number "${{ inputs.pr-number }}" \
+          --token "${{ inputs.token }}"

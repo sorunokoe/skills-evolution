@@ -1,0 +1,26 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile
+        run: |
+          python3 -m py_compile src/skills_evolution/*.py tests/test_core.py tests/test_health.py
+
+      - name: Run tests
+        run: |
+          PYTHONPATH=src python3 -m unittest discover -s tests

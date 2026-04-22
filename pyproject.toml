@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skills-evolution"
+version = "0.1.0"
+description = "Shared tooling for AI skill traces, PR-body publish, and skills evolution workflows."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "TrackMan" }]
+
+[project.scripts]
+skills-evolution = "skills_evolution.cli:main"
+skills-evolution-mcp = "skills_evolution.mcp_server:main"
+skills-evolution-health = "skills_evolution.health:main"
+skills-evolution-semantic-pass = "skills_evolution.semantic:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
