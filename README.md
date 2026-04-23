@@ -1,24 +1,26 @@
 # skills-evolution
 
-`skills-evolution` is the shared toolkit for trace-based AI skill governance.
+`skills-evolution` is the shared toolkit for AI skill governance.
 
 It packages five pieces:
 
 1. **Trace CLI** for writing local trace records and publishing them into a PR body.
 2. **MCP server** so agents can record/publish traces through standard tools.
-3. **Health toolkit** for structural audit, trace/verdict aggregation, and summary generation.
+3. **Health toolkit** for structural audit, normal PR comment analysis, trace/verdict aggregation, and summary generation.
 4. **Optional semantic pass** for disputed sections only.
 5. **Shared GitHub Action/workflow assets** for GitHub-web PR fallback and monthly health automation.
 
 ## Design
 
-The default path is intentionally simple:
+The precise path is intentionally simple:
 
 1. AI records exact skill usage into `.github/.skill-trace.ndjson` locally.
 2. After the PR exists, the CLI publishes those traces into the hidden PR-body block.
 3. Reviewers judge exact trace IDs in comments.
 
 The only unavoidable edge case is a PR opened on GitHub.com after traces were created on a laptop. In that flow, some pushed artifact is required. The fallback action solves that by consuming a force-added `.github/.skill-trace.ndjson` and moving it into the PR body.
+
+For low-friction repository adoption, the monthly health workflow can also analyze **normal PR comments and reviews** without requiring trace capture or structured `skill-miss:` comments. Structured tags remain optional high-confidence hints when teams want them.
 
 ## Install
 
@@ -101,6 +103,8 @@ skills-evolution-health feedback --repo-root /path/to/repo --raw outputs/skills-
 skills-evolution-health combine --output-dir outputs
 ```
 
+The feedback step uses **normal PR comments/reviews as the primary monthly signal** and treats structured tags such as `skill-miss:` or trace-linked `skill-verdict:` comments as optional stronger evidence.
+
 ### Optional semantic pass
 
 ```bash
@@ -134,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: sorunokoe/skills-evolution@v0.1.0
+      - uses: sorunokoe/skills-evolution@v0.1.1
         with:
           repo: ${{ github.repository }}
           pr-number: ${{ github.event.pull_request.number }}
@@ -148,7 +152,7 @@ For published use, clients should keep only tiny wrappers and call the shared wo
 ```yaml
 jobs:
   skills-health:
-    uses: sorunokoe/skills-evolution/.github/workflows/skills_health.yml@v0.1.0
+    uses: sorunokoe/skills-evolution/.github/workflows/skills_health.yml@v0.1.1
     with:
       since_days: "35"
       auto_fix_metadata_links: true
@@ -163,7 +167,7 @@ jobs:
 ```yaml
 jobs:
   fallback-traces:
-    uses: sorunokoe/skills-evolution/.github/workflows/skills-trace-capture.yml@v0.1.0
+    uses: sorunokoe/skills-evolution/.github/workflows/skills-trace-capture.yml@v0.1.1
     with:
       repo: ${{ github.repository }}
       pr_number: ${{ github.event.pull_request.number }}
@@ -194,7 +198,7 @@ If a repository currently carries local copies of the transport scripts, treat t
 
 ```bash
 PYTHONPATH=src python3 -m skills_evolution.cli write \
-  --repo-root /Users/yesa/Documents/Projects/Trackman/GolfApp \
+  --repo-root /path/to/your/repo \
   --skill swiftui-standards \
   --file .github/skills/swiftui-standards/references/state-management.md \
   --section-id tca-store-ownership \

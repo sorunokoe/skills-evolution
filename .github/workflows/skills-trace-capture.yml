@@ -48,5 +48,4 @@ jobs:
         run: |
           python3 -m skills_evolution.cli fallback \
             --repo "${{ inputs.repo }}" \
-            --pr-number "${{ inputs.pr_number }}" \
-            --token "$GH_TOKEN"
+            --pr-number "${{ inputs.pr_number }}"

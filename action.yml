@@ -18,8 +18,8 @@ runs:
     - shell: bash
       env:
         PYTHONPATH: ${{ github.action_path }}/src
+        GH_TOKEN: ${{ inputs.token }}
       run: |
         python3 -m skills_evolution.cli fallback \
           --repo "${{ inputs.repo }}" \
-          --pr-number "${{ inputs.pr-number }}" \
-          --token "${{ inputs.token }}"
+          --pr-number "${{ inputs.pr-number }}"

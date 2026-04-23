@@ -28,6 +28,42 @@ SKILL_MISS_RE = re.compile(
 )
 
 _MAX_FEEDBACK_PAGES = 20
+_SKILL_ALIAS_SUFFIXES = ("-standards", "-golden-path", "-template")
+_COMMENT_GAP_HINTS = (
+	"missing",
+	"not covered",
+	"should cover",
+	"should mention",
+	"should explain",
+	"needs guidance",
+	"need guidance",
+	"needs docs",
+	"need docs",
+	"needs documentation",
+	"need documentation",
+	"not documented",
+	"add guidance",
+	"add example",
+	"add examples",
+	"document ",
+	"documentation ",
+)
+_COMMENT_FIX_HINTS = (
+	"outdated",
+	"stale",
+	"wrong",
+	"incorrect",
+	"inaccurate",
+	"obsolete",
+	"misleading",
+	"confusing",
+	"unclear",
+	"contradict",
+	"does not match",
+	"doesn't match",
+)
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 @dataclass
@@ -69,6 +105,17 @@ def write_text(path: Path, content: str) -> None:
 	path.write_text(content, encoding="utf-8")
 
 
+def normalize_phrase(text: str) -> str:
+	return _NON_ALNUM_RE.sub(" ", text.lower()).strip()
+
+
+def comment_excerpt(text: str, limit: int = 160) -> str:
+	flat = _WHITESPACE_RE.sub(" ", text).strip()
+	if len(flat) <= limit:
+		return flat
+	return flat[: max(0, limit - 3)].rstrip() + "..."
+
+
 def parse_frontmatter(content: str) -> tuple[dict[str, str], int | None, int | None]:
 	match = FRONTMATTER_RE.match(content)
 	if not match:
@@ -90,6 +137,56 @@ def iter_skill_files(repo_root: Path) -> list[Path]:
 
 def iter_markdown_files(skill_dir: Path) -> list[Path]:
 	return sorted(skill_dir.rglob("*.md"))
+
+
+def build_skill_aliases(repo_root: Path) -> dict[str, set[str]]:
+	aliases: dict[str, set[str]] = {}
+	for skill_file in iter_skill_files(repo_root):
+		skill = skill_file.parent.name
+		content = read_text(skill_file)
+		frontmatter, _, _ = parse_frontmatter(content)
+		values = {skill, skill.replace("-", " ")}
+		name = frontmatter.get("name", "")
+		if name:
+			values.add(name)
+		for suffix in _SKILL_ALIAS_SUFFIXES:
+			if skill.endswith(suffix):
+				base = skill[: -len(suffix)]
+				if base:
+					values.add(base)
+					values.add(base.replace("-", " "))
+		normalized = {normalize_phrase(value) for value in values}
+		aliases[skill] = {value for value in normalized if value}
+	return aliases
+
+
+def detect_comment_feedback_type(text: str) -> str | None:
+	normalized = normalize_phrase(text)
+	if not normalized:
+		return None
+	if any(phrase in normalized for phrase in _COMMENT_FIX_HINTS):
+		return "fix"
+	if any(phrase in normalized for phrase in _COMMENT_GAP_HINTS):
+		return "gap"
+	return None
+
+
+def extract_comment_feedback_signals(text: str, skill_aliases: dict[str, set[str]]) -> list[dict[str, str]]:
+	if TRACE_VERDICT_RE.search(text) or SKILL_MISS_RE.search(text):
+		return []
+	feedback_type = detect_comment_feedback_type(text)
+	if feedback_type is None:
+		return []
+	normalized = f" {normalize_phrase(text)} "
+	matched_skills = sorted(
+		skill
+		for skill, aliases in skill_aliases.items()
+		if any(f" {alias} " in normalized for alias in aliases)
+	)
+	if not matched_skills:
+		return []
+	snippet = comment_excerpt(text)
+	return [{"skill": skill, "type": feedback_type, "comment": snippet} for skill in matched_skills]
 
 
 def local_link_target(md_file: Path, link: str) -> tuple[Path | None, str | None]:
@@ -383,8 +480,20 @@ def extract_trace_records(pr: dict[str, Any]) -> list[dict[str, Any]]:
 def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 	raw = json.loads(read_text(raw_path))
 	known_skills = {p.parent.name for p in iter_skill_files(repo_root)}
+	skill_aliases = build_skill_aliases(repo_root)
 	per_skill = {
-		skill: {"tp": 0, "fp": 0, "fn": 0, "usage": 0, "fix_needed": 0, "fp_reasons": Counter(), "miss_reasons": Counter()}
+		skill: {
+			"tp": 0,
+			"fp": 0,
+			"fn": 0,
+			"usage": 0,
+			"fix_needed": 0,
+			"comment_gap": 0,
+			"comment_fix": 0,
+			"fp_reasons": Counter(),
+			"miss_reasons": Counter(),
+			"comment_examples": {"gap": [], "fix": []},
+		}
 		for skill in known_skills
 	}
 	trace_index: dict[str, dict[str, Any]] = {}
@@ -457,6 +566,15 @@ def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 				per_skill[s]["fn"] += 1
 				if reason:
 					per_skill[s]["miss_reasons"][reason] += 1
+			for signal in extract_comment_feedback_signals(text, skill_aliases):
+				stats = per_skill[signal["skill"]]
+				if signal["type"] == "gap":
+					stats["comment_gap"] += 1
+				else:
+					stats["comment_fix"] += 1
+				examples = stats["comment_examples"][signal["type"]]
+				if signal["comment"] not in examples and len(examples) < 3:
+					examples.append(signal["comment"])
 
 	metrics = {}
 	for skill, counts in per_skill.items():
@@ -474,20 +592,38 @@ def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 			"fn": fn,
 			"usage": counts["usage"],
 			"fix_needed": counts["fix_needed"],
+			"comment_gap": counts["comment_gap"],
+			"comment_fix": counts["comment_fix"],
 			"precision": precision,
 			"precision_proxy": precision,  # backward-compat alias; deprecated
 			"recall": recall,
 			"fp_rate": fp_rate,
 			"fp_reasons": dict(counts["fp_reasons"]),
 			"miss_reasons": dict(counts["miss_reasons"]),
+			"comment_examples": counts["comment_examples"],
 		}
-		if fn >= 2:
+		total_gap_signals = fn + counts["comment_gap"]
+		if total_gap_signals >= 2:
 			proposals.append(
 				{
 					"skill": skill,
 					"type": "ADD_MISSING_GUIDANCE",
 					"action": "Add missing guidance or examples for scenarios repeatedly called out as absent.",
-					"evidence": {"fn": fn, "miss_reasons": dict(counts["miss_reasons"])},
+					"evidence": {
+						"fn": fn,
+						"comment_gap": counts["comment_gap"],
+						"miss_reasons": dict(counts["miss_reasons"]),
+						"sample_comments": counts["comment_examples"]["gap"],
+					},
+				}
+			)
+		if counts["comment_fix"] >= 2:
+			proposals.append(
+				{
+					"skill": skill,
+					"type": "REVIEW_SKILL_FEEDBACK",
+					"action": "Review this skill for stale, inaccurate, or confusing guidance repeatedly called out in PR comments.",
+					"evidence": {"comment_fix": counts["comment_fix"], "sample_comments": counts["comment_examples"]["fix"]},
 				}
 			)
 	for section in disputed_sections.values():
@@ -515,11 +651,27 @@ def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 		key=lambda item: (-(item["fp"] + item["fix_needed"]), -item["usage"], item["skill"], item["line_start"]),
 	)
 
+	comment_signals = []
+	for skill in sorted(metrics.keys()):
+		m = metrics[skill]
+		if m["comment_gap"] == 0 and m["comment_fix"] == 0:
+			continue
+		comment_signals.append(
+			{
+				"skill": skill,
+				"gap": m["comment_gap"],
+				"fix": m["comment_fix"],
+				"examples": m["comment_examples"],
+			}
+		)
+
 	output = {
 		"generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
 		"source_pull_requests": len(raw.get("pull_requests", [])),
 		"trace_count": len(trace_index),
+		"comment_signal_count": sum(item["gap"] + item["fix"] for item in comment_signals),
 		"metrics_by_skill": metrics,
+		"comment_signals": comment_signals,
 		"disputed_sections": [
 			{
 				"skill": item["skill"],
@@ -549,20 +701,31 @@ def analyze_feedback(raw_path: Path, repo_root: Path, output_dir: Path) -> int:
 		"",
 		f"- Pull requests analyzed: {output['source_pull_requests']}",
 		f"- Explicit skill traces analyzed: {output['trace_count']}",
+		f"- Review comment signals analyzed: {output['comment_signal_count']}",
 		f"- Improvement proposals: {output['proposal_count']}",
 		"",
 		"## Skill metrics",
 		"",
-		"| Skill | Usage | TP | FP | Fix needed | Misses | Precision | Recall |",
-		"|---|---:|---:|---:|---:|---:|---:|---:|",
+		"| Skill | Usage | TP | FP | Fix needed | Misses | Comment gaps | Comment fixes | Precision | Recall |",
+		"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
 	]
 	for skill in sorted(metrics.keys()):
 		m = metrics[skill]
 		precision = "n/a" if m["precision"] is None else f"{m['precision']:.2f}"
 		recall = "n/a" if m["recall"] is None else f"{m['recall']:.2f}"
 		lines.append(
-			f"| `{skill}` | {m['usage']} | {m['tp']} | {m['fp']} | {m['fix_needed']} | {m['fn']} | {precision} | {recall} |"
+			f"| `{skill}` | {m['usage']} | {m['tp']} | {m['fp']} | {m['fix_needed']} | {m['fn']} | {m['comment_gap']} | {m['comment_fix']} | {precision} | {recall} |"
 		)
+	lines.extend(["", "## Review comment signals", ""])
+	if not comment_signals:
+		lines.append("- No normal PR comments were confidently mapped to a skill.")
+	else:
+		for item in comment_signals[:10]:
+			lines.append(f"- `{item['skill']}` gap={item['gap']} fix={item['fix']}")
+			for example in item["examples"]["gap"][:2]:
+				lines.append(f"  - gap example: {example}")
+			for example in item["examples"]["fix"][:2]:
+				lines.append(f"  - fix example: {example}")
 	lines.extend(["", "## Disputed sections", ""])
 	disputed = output["disputed_sections"]
 	if not disputed:
@@ -593,7 +756,11 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 	feedback_path = output_dir / "skills-feedback.json"
 	semantic_path = output_dir / "skills-semantic.json"
 	audit = json.loads(read_text(audit_path)) if audit_path.exists() else {"findings_count": 0}
-	feedback = json.loads(read_text(feedback_path)) if feedback_path.exists() else {"proposal_count": 0, "trace_count": 0, "disputed_sections": []}
+	feedback = (
+		json.loads(read_text(feedback_path))
+		if feedback_path.exists()
+		else {"proposal_count": 0, "trace_count": 0, "comment_signal_count": 0, "disputed_sections": []}
+	)
 	semantic_enabled = semantic_path.exists()
 	semantic = json.loads(read_text(semantic_path)) if semantic_enabled else {"content_findings": [], "proposals": [], "note": "Optional AI semantic review was not run."}
 	findings_count = int(audit.get("findings_count", 0))
@@ -601,6 +768,7 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 	semantic_findings_count = len(semantic.get("content_findings", [])) if semantic_enabled else 0
 	semantic_proposals_count = len(semantic.get("proposals", [])) if semantic_enabled else 0
 	trace_count = int(feedback.get("trace_count", 0))
+	comment_signal_count = int(feedback.get("comment_signal_count", 0))
 	disputed_count = len(feedback.get("disputed_sections", []))
 	proposal_count += semantic_proposals_count
 	now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
@@ -612,6 +780,7 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 		"",
 		f"- Audit findings: **{findings_count}**",
 		f"- Explicit AI traces analyzed: **{trace_count}**",
+		f"- Review comment signals analyzed: **{comment_signal_count}**",
 		f"- Disputed traced sections: **{disputed_count}**",
 		f"- Optional AI content-level findings: **{semantic_findings_count}**" if semantic_enabled else "- Optional AI content-level findings: **not run**",
 		f"- Total improvement proposals (rules + content): **{proposal_count}**",
@@ -621,26 +790,44 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 		"- `BROKEN_LINK`: invalid intra-skill references",
 		"- `METADATA_DRIFT`: frontmatter/schema drift",
 		"- `REGISTRY_DRIFT`: skill table mismatch",
+		"- `REVIEW_FEEDBACK`: normal PR comments pointed to a likely gap or stale skill guidance",
 		"- `DISPUTED_SECTION`: specific traced section repeatedly marked FP or fix-needed",
 		"- `MISSING_GUIDANCE`: developers reported a guidance gap for a skill",
 		"",
 		"## Reports",
 		"",
 		"- See `skills-audit.md` for structural findings",
-		"- See `skills-feedback.md` for trace/verdict analysis and disputed sections",
+		"- See `skills-feedback.md` for review-comment analysis, trace analysis, and disputed sections",
 		"",
 		"## TRIZ lens applied",
 		"",
 		"- AC: improve skill quality without intrusive telemetry or broad guesswork",
 		"- TC/PC: precise evidence vs low operational complexity",
-		"- IFR: exact skill sections self-identify during AI use, then reviewers judge only those exact sections",
+		"- IFR: normal PR review feedback improves skills with zero extra author ceremony, while traces remain optional for exact attribution",
 		"- Principles used: #2 Taking Out, #10 Preliminary Action, #23 Feedback, #24 Mediator, #26 Copying",
 	]
 	if semantic_enabled:
 		lines.insert(15, "- `CONTENT_ACCURACY`: optional AI review found likely wrong, stale, or contradictory lines in disputed sections")
 		lines.insert(21, "- See `skills-semantic.md` for optional AI content-level analysis and line-targeted fixes")
 	if trace_count == 0:
-		lines.extend(["", "## Honesty note", "", "- No explicit AI traces were found in the analyzed PR window. Structural checks still ran, but monthly content scoring is limited until agents emit traces."])
+		if comment_signal_count > 0:
+			lines.extend(
+				[
+					"",
+					"## Honesty note",
+					"",
+					"- No explicit AI traces were found in the analyzed PR window. Structural checks and review-comment analysis still ran, but exact section-level attribution remains unavailable without traces.",
+				]
+			)
+		else:
+			lines.extend(
+				[
+					"",
+					"## Honesty note",
+					"",
+					"- No explicit AI traces or comment-derived skill signals were found in the analyzed PR window. Structural checks still ran.",
+				]
+			)
 	if semantic_findings_count:
 		lines.extend(["", "## Top content-level findings (Copilot)", ""])
 		for item in semantic.get("content_findings", [])[:5]:
