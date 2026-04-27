@@ -755,6 +755,7 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 	audit_path = output_dir / "skills-audit.json"
 	feedback_path = output_dir / "skills-feedback.json"
 	semantic_path = output_dir / "skills-semantic.json"
+	ai_updates_path = output_dir / "skills-ai-updates.json"
 	audit = json.loads(read_text(audit_path)) if audit_path.exists() else {"findings_count": 0}
 	feedback = (
 		json.loads(read_text(feedback_path))
@@ -763,6 +764,8 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 	)
 	semantic_enabled = semantic_path.exists()
 	semantic = json.loads(read_text(semantic_path)) if semantic_enabled else {"content_findings": [], "proposals": [], "note": "Optional AI semantic review was not run."}
+	ai_updates_enabled = ai_updates_path.exists()
+	ai_updates = json.loads(read_text(ai_updates_path)) if ai_updates_enabled else {}
 	findings_count = int(audit.get("findings_count", 0))
 	proposal_count = int(feedback.get("proposal_count", 0))
 	semantic_findings_count = len(semantic.get("content_findings", [])) if semantic_enabled else 0
@@ -771,6 +774,10 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 	comment_signal_count = int(feedback.get("comment_signal_count", 0))
 	disputed_count = len(feedback.get("disputed_sections", []))
 	proposal_count += semantic_proposals_count
+	ai_patches_applied = int(ai_updates.get("total_patches_applied", 0)) if ai_updates_enabled else 0
+	ai_skills_changed = int(ai_updates.get("skills_changed", 0)) if ai_updates_enabled else 0
+	# Include applied AI patches in findings so the PR-creation gate fires when skills were updated.
+	findings_count += ai_patches_applied
 	now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
 	lines = [
@@ -783,6 +790,7 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 		f"- Review comment signals analyzed: **{comment_signal_count}**",
 		f"- Disputed traced sections: **{disputed_count}**",
 		f"- Optional AI content-level findings: **{semantic_findings_count}**" if semantic_enabled else "- Optional AI content-level findings: **not run**",
+		f"- AI inline patches applied: **{ai_patches_applied}** ({ai_skills_changed} skill(s) updated)" if ai_updates_enabled else "- AI inline skill update: **not run**",
 		f"- Total improvement proposals (rules + content): **{proposal_count}**",
 		"",
 		"## Root-cause buckets",
@@ -807,8 +815,11 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 		"- Principles used: #2 Taking Out, #10 Preliminary Action, #23 Feedback, #24 Mediator, #26 Copying",
 	]
 	if semantic_enabled:
-		lines.insert(15, "- `CONTENT_ACCURACY`: optional AI review found likely wrong, stale, or contradictory lines in disputed sections")
-		lines.insert(21, "- See `skills-semantic.md` for optional AI content-level analysis and line-targeted fixes")
+		lines.insert(16, "- `CONTENT_ACCURACY`: optional AI review found likely wrong, stale, or contradictory lines in disputed sections")
+		lines.insert(23, "- See `skills-semantic.md` for optional AI content-level analysis and line-targeted fixes")
+	if ai_updates_enabled:
+		lines.insert(-4, "- `AI_SKILL_UPDATE`: GitHub Models reviewed skill files against latest library versions and applied inline patches")
+		lines.insert(-1, "- See `skills-ai-updates.md` for AI-applied version and best-practice patches")
 	if trace_count == 0:
 		if comment_signal_count > 0:
 			lines.extend(
@@ -841,6 +852,12 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 				if item.get("line_end") and item.get("line_end") != item.get("line_start"):
 					span += f"-{item.get('line_end')}"
 			lines.append(f"- `{skill}` **{issue}** in `{file_path}{span}` — {evidence}")
+	if ai_updates_enabled and ai_patches_applied > 0:
+		lines.extend(["", "## AI inline patches applied", ""])
+		for entry in ai_updates.get("by_skill", []):
+			if entry.get("applied", 0) == 0:
+				continue
+			lines.append(f"- `{entry['skill']}` — {entry.get('summary', '')}")
 	write_text(output_dir / "skills-health-summary.md", "\n".join(lines) + "\n")
 	return findings_count, proposal_count
 

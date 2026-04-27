@@ -15,6 +15,29 @@ on:
         required: false
         type: boolean
         default: false
+      enable_ai_skill_update:
+        required: false
+        type: boolean
+        default: false
+        # When true: fetches latest library versions from GitHub releases, calls GitHub Models
+        # (gpt-4o-mini by default) once per skill file, and applies conservative inline patches.
+        # Requires GITHUB_TOKEN to have models:read (granted automatically in Actions runners).
+      ai_model:
+        required: false
+        type: string
+        default: "gpt-4o-mini"
+        # GitHub Models model ID. See https://github.com/marketplace/models
+      tracked_deps:
+        required: false
+        type: string
+        default: ""
+        # JSON array of {alias, repo} objects to track. Defaults to TCA, FactoryKit, Tuist,
+        # swift-navigation, Kotlin, Compose Multiplatform, Circuit, kotlin-inject.
+      max_skills:
+        required: false
+        type: string
+        default: "15"
+        # Maximum number of skill files to send to GitHub Models per run.
       open_pr_on_findings:
         required: false
         type: boolean
@@ -47,6 +70,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  models: read
 
 jobs:
   skills-health:
@@ -100,6 +124,24 @@ jobs:
             --repo-root . \
             --raw outputs/skills-feedback-raw.json \
             --output-dir outputs
+
+      - name: AI skill content update
+        if: inputs.enable_ai_skill_update == true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
+          GH_TOKEN: ${{ secrets.github_token }}
+        run: |
+          DEPS_ARG=""
+          if [[ -n "${{ inputs.tracked_deps }}" ]]; then
+            DEPS_ARG="--tracked-deps '${{ inputs.tracked_deps }}'"
+          fi
+          python3 -m skills_evolution.ai_updater \
+            --repo-root . \
+            --output-dir outputs \
+            --token "$GH_TOKEN" \
+            --model "${{ inputs.ai_model }}" \
+            --max-skills "${{ inputs.max_skills }}" \
+            $DEPS_ARG | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Node.js for optional AI review
         if: inputs.enable_ai_review == true

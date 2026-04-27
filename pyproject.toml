@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skills-evolution"
-version = "0.1.1"
+version = "0.1.2"
 description = "Shared tooling for AI skill traces, PR-body publish, and skills evolution workflows."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ skills-evolution = "skills_evolution.cli:main"
 skills-evolution-mcp = "skills_evolution.mcp_server:main"
 skills-evolution-health = "skills_evolution.health:main"
 skills-evolution-semantic-pass = "skills_evolution.semantic:main"
+skills-evolution-ai-update = "skills_evolution.ai_updater:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

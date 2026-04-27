@@ -31,8 +31,41 @@ class HealthTests(unittest.TestCase):
 			self.assertEqual(proposals, 1)
 			summary = (output_dir / "skills-health-summary.md").read_text(encoding="utf-8")
 			self.assertIn("Optional AI content-level findings: **not run**", summary)
+			self.assertIn("AI inline skill update: **not run**", summary)
 			self.assertIn("Explicit AI traces analyzed: **3**", summary)
 			self.assertIn("Review comment signals analyzed: **0**", summary)
+
+	def test_combine_reports_with_ai_updates_increments_findings(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp_dir:
+			output_dir = Path(tmp_dir)
+			(output_dir / "skills-audit.json").write_text(json.dumps({"findings_count": 0}), encoding="utf-8")
+			(output_dir / "skills-feedback.json").write_text(
+				json.dumps({"proposal_count": 0, "trace_count": 0, "comment_signal_count": 0, "disputed_sections": []}),
+				encoding="utf-8",
+			)
+			(output_dir / "skills-ai-updates.json").write_text(
+				json.dumps({
+					"total_patches_applied": 3,
+					"skills_changed": 2,
+					"skills_processed": 5,
+					"total_patches_skipped": 1,
+					"total_patches_ambiguous": 0,
+					"by_skill": [
+						{"skill": "tca-standards", "applied": 2, "summary": "Updated TCA version."},
+						{"skill": "swiftui-standards", "applied": 1, "summary": "Updated SwiftUI API."},
+					],
+				}),
+				encoding="utf-8",
+			)
+
+			findings, proposals = health.combine_reports(output_dir)
+
+			# AI patches applied (3) should be folded into findings_count.
+			self.assertEqual(findings, 3)
+			summary = (output_dir / "skills-health-summary.md").read_text(encoding="utf-8")
+			self.assertIn("AI inline patches applied: **3**", summary)
+			self.assertIn("tca-standards", summary)
+			self.assertIn("swiftui-standards", summary)
 
 	def test_analyze_feedback_uses_normal_review_comments(self) -> None:
 		with tempfile.TemporaryDirectory() as tmp_dir:
