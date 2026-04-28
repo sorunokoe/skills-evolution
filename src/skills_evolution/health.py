@@ -846,70 +846,56 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 	findings_count += ai_patches_applied
 	now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
-	lines = [
-		f"# Skills Health Summary ({now})",
-		"",
-		"## Executive summary",
-		"",
-		f"- Audit findings: **{findings_count}**",
-		f"- Explicit AI traces analyzed: **{trace_count}**",
-		f"- Review comment signals analyzed: **{comment_signal_count}**",
-		f"- Disputed traced sections: **{disputed_count}**",
-		f"- Optional AI content-level findings: **{semantic_findings_count}**" if semantic_enabled else "- Optional AI content-level findings: **not run**",
-		f"- AI inline patches applied: **{ai_patches_applied}** ({ai_skills_changed} skill(s) updated)" if ai_updates_enabled else "- AI inline skill update: **not run**",
-		f"- Total improvement proposals (rules + content): **{proposal_count}**",
-		"",
-		"## Root-cause buckets",
-		"",
-		"- `BROKEN_LINK`: invalid intra-skill references",
-		"- `METADATA_DRIFT`: frontmatter/schema drift",
-		"- `REGISTRY_DRIFT`: skill table mismatch",
-		"- `REVIEW_FEEDBACK`: normal PR comments pointed to a likely gap or stale skill guidance",
-		"- `DISPUTED_SECTION`: specific traced section repeatedly marked FP or fix-needed",
-		"- `MISSING_GUIDANCE`: developers reported a guidance gap for a skill",
-		"",
-		"## Reports",
-		"",
-		"- See `skills-audit.md` for structural findings",
-		"- See `skills-feedback.md` for review-comment analysis, trace analysis, and disputed sections",
-		"",
-		"## TRIZ lens applied",
-		"",
-		"- AC: improve skill quality without intrusive telemetry or broad guesswork",
-		"- TC/PC: precise evidence vs low operational complexity",
-		"- IFR: normal PR review feedback improves skills with zero extra author ceremony, while traces remain optional for exact attribution",
-		"- Principles used: #2 Taking Out, #10 Preliminary Action, #23 Feedback, #24 Mediator, #26 Copying",
-	]
-	if semantic_enabled:
-		lines.insert(16, "- `CONTENT_ACCURACY`: optional AI review found likely wrong, stale, or contradictory lines in disputed sections")
-		lines.insert(23, "- See `skills-semantic.md` for optional AI content-level analysis and line-targeted fixes")
-	if ai_updates_enabled:
-		lines.insert(-4, "- `AI_SKILL_UPDATE`: GitHub Models reviewed skill files against latest library versions and applied inline patches")
-		lines.insert(-1, "- See `skills-ai-updates.md` for AI-applied version and best-practice patches")
-	if trace_count == 0:
-		if comment_signal_count > 0:
-			lines.extend(
-				[
-					"",
-					"## Honesty note",
-					"",
-					"- No explicit AI traces were found in the analyzed PR window. Structural checks and review-comment analysis still ran, but exact section-level attribution remains unavailable without traces.",
-				]
-			)
-		else:
-			lines.extend(
-				[
-					"",
-					"## Honesty note",
-					"",
-					"- No explicit AI traces or comment-derived skill signals were found in the analyzed PR window. Structural checks still ran.",
-				]
-			)
+	lines = [f"🤖 Monthly skill health check — {now}", ""]
+
+	# --- AI patches: show the actual diffs so the reviewer can judge ---
+	if ai_updates_enabled and ai_patches_applied > 0:
+		patch_word = "patch" if ai_patches_applied == 1 else "patches"
+		lines += [
+			f"## {ai_patches_applied} version {patch_word} applied across {ai_skills_changed} file(s)",
+			"",
+			"Versions are fetched live from GitHub releases — no training-data guesses.",
+			"",
+		]
+		for entry in ai_updates.get("by_skill", []):
+			if entry.get("applied", 0) == 0:
+				continue
+			label = entry.get("file") or entry.get("skill", "?")
+			applied_patches = [p for p in entry.get("patches", []) if p.get("_status") == "applied"]
+			lines.append(f"### `{label}`")
+			lines.append("")
+			if applied_patches:
+				for p in applied_patches:
+					old = p.get("old_text", "").strip()
+					new = p.get("new_text", "").strip()
+					reason = p.get("reason", "").strip()
+					lines += [
+						"```diff",
+						f"- {old}",
+						f"+ {new}",
+						"```",
+						f"> {reason}" if reason else "",
+						"",
+					]
+			else:
+				# Patch data not available (e.g. legacy report format)
+				lines += [f"_{entry.get('applied', 0)} patch(es) applied — see run artifacts for details._", ""]
+
+	# --- Structural findings ---
+	structural_count = findings_count - ai_patches_applied
+	if structural_count > 0:
+		lines += [
+			"## Structural findings",
+			"",
+			f"{structural_count} issue(s) found — see `skills-audit.md` in the run artifacts for details.",
+			"",
+		]
+
+	# --- Content-level findings (optional Copilot step) ---
 	if semantic_findings_count:
-		lines.extend(["", "## Top content-level findings (Copilot)", ""])
+		lines += ["## Content findings (Copilot review)", ""]
 		for item in semantic.get("content_findings", [])[:5]:
 			file_path = item.get("file", "unknown")
-			skill = item.get("skill", "unknown")
 			issue = item.get("issue_type", "CONTENT_ACCURACY")
 			evidence = item.get("evidence", "").strip()
 			span = ""
@@ -917,13 +903,17 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 				span = f":{item.get('line_start')}"
 				if item.get("line_end") and item.get("line_end") != item.get("line_start"):
 					span += f"-{item.get('line_end')}"
-			lines.append(f"- `{skill}` **{issue}** in `{file_path}{span}` — {evidence}")
-	if ai_updates_enabled and ai_patches_applied > 0:
-		lines.extend(["", "## AI inline patches applied", ""])
-		for entry in ai_updates.get("by_skill", []):
-			if entry.get("applied", 0) == 0:
-				continue
-			lines.append(f"- `{entry['skill']}` — {entry.get('summary', '')}")
+			lines.append(f"- **{issue}** in `{file_path}{span}` — {evidence}")
+		lines.append("")
+
+	# --- Nothing to show ---
+	if findings_count == 0:
+		lines += ["_Nothing to fix this month. The skills are in great shape! 🎉_", ""]
+
+	lines += [
+		"---",
+		"_Review each diff above. If something looks wrong, close this PR — the bot runs again next month._",
+	]
 	write_text(output_dir / "skills-health-summary.md", "\n".join(lines) + "\n")
 	return findings_count, proposal_count
 

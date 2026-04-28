@@ -30,10 +30,8 @@ class HealthTests(unittest.TestCase):
 			self.assertEqual(findings, 2)
 			self.assertEqual(proposals, 1)
 			summary = (output_dir / "skills-health-summary.md").read_text(encoding="utf-8")
-			self.assertIn("Optional AI content-level findings: **not run**", summary)
-			self.assertIn("AI inline skill update: **not run**", summary)
-			self.assertIn("Explicit AI traces analyzed: **3**", summary)
-			self.assertIn("Review comment signals analyzed: **0**", summary)
+			self.assertIn("Structural findings", summary)
+			self.assertIn("2 issue(s)", summary)
 
 	def test_combine_reports_with_ai_updates_increments_findings(self) -> None:
 		with tempfile.TemporaryDirectory() as tmp_dir:
@@ -63,7 +61,7 @@ class HealthTests(unittest.TestCase):
 			# AI patches applied (3) should be folded into findings_count.
 			self.assertEqual(findings, 3)
 			summary = (output_dir / "skills-health-summary.md").read_text(encoding="utf-8")
-			self.assertIn("AI inline patches applied: **3**", summary)
+			self.assertIn("3 version patches applied", summary)
 			self.assertIn("tca-standards", summary)
 			self.assertIn("swiftui-standards", summary)
 
