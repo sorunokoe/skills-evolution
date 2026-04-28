@@ -7,6 +7,7 @@ name: Skills Health
 #     workflow_dispatch:        # manual trigger
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       since_days:

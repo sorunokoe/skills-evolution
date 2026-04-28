@@ -15,6 +15,7 @@ name: OSS Skill Health
 # No feedback collection step: OSS skill repo PRs are maintainer edits, not agent usage signals.
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       enable_ai_skill_update:
