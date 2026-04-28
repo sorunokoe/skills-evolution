@@ -92,6 +92,38 @@ class ApplyPatchesTests(unittest.TestCase):
 			applied, skipped, _ = ai_updater.apply_patches(patches, path, rel, content)
 			self.assertEqual((applied, skipped), (0, 1))
 
+	def test_ungrounded_version_is_rejected(self) -> None:
+		"""Patch must be rejected if new_text introduces a version not in versions_ctx."""
+		content = "Use Library 1.5 here.\n"
+		versions_ctx = "## Verified\nlatest `1.6.0`"
+		with tempfile.TemporaryDirectory() as tmp:
+			_, path, rel = make_skill(tmp, content)
+			# AI hallucinates "2.0.0" which is not in versions_ctx
+			patches = [{"old_text": "Library 1.5", "new_text": "Library 2.0.0", "reason": "hallucinated"}]
+			applied, skipped, _ = ai_updater.apply_patches(patches, path, rel, content, versions_ctx=versions_ctx)
+			self.assertEqual((applied, skipped), (0, 1))
+			self.assertEqual(path.read_text(), content)
+
+	def test_grounded_version_is_applied(self) -> None:
+		"""Patch is accepted if new_text uses only versions present in versions_ctx."""
+		content = "Use Library 1.5 here.\n"
+		versions_ctx = "## Verified\nlatest `1.6.0`"
+		with tempfile.TemporaryDirectory() as tmp:
+			_, path, rel = make_skill(tmp, content)
+			patches = [{"old_text": "Library 1.5", "new_text": "Library 1.6.0", "reason": "bump"}]
+			applied, skipped, _ = ai_updater.apply_patches(patches, path, rel, content, versions_ctx=versions_ctx)
+			self.assertEqual((applied, skipped), (1, 0))
+			self.assertIn("1.6.0", path.read_text())
+
+	def test_no_versions_ctx_skips_validation(self) -> None:
+		"""When versions_ctx is empty, no version grounding check is applied."""
+		content = "Use Library 1.5 here.\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			_, path, rel = make_skill(tmp, content)
+			patches = [{"old_text": "Library 1.5", "new_text": "Library 99.0", "reason": "no ctx"}]
+			applied, skipped, _ = ai_updater.apply_patches(patches, path, rel, content, versions_ctx="")
+			self.assertEqual((applied, skipped), (1, 0))
+
 
 class DiscoverDepsTests(unittest.TestCase):
 	def test_parses_package_resolved_v3(self) -> None:

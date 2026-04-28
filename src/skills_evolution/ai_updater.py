@@ -182,35 +182,59 @@ def _gh_get(path: str, token: str) -> Any:
 		return {"_error": str(exc)}
 
 
-def _latest_tag(repo: str, token: str) -> str:
+def _release_info(repo: str, token: str) -> dict[str, str]:
+	"""Fetch latest release: tag, formatted release date, key notes."""
 	data = _gh_get(f"repos/{repo}/releases/latest", token)
-	if isinstance(data, dict) and data.get("tag_name"):
-		return data["tag_name"]
-	tags = _gh_get(f"repos/{repo}/tags", token)
-	return tags[0]["name"] if isinstance(tags, list) and tags else "unknown"
+	if not isinstance(data, dict) or not data.get("tag_name"):
+		tags = _gh_get(f"repos/{repo}/tags", token)
+		tag = tags[0]["name"] if isinstance(tags, list) and tags else "unknown"
+		return {"tag": tag, "date": "", "notes": ""}
 
+	tag = data["tag_name"]
+	published = data.get("published_at", "")
+	date_str = ""
+	if published:
+		try:
+			d = dt.datetime.fromisoformat(published.replace("Z", "+00:00"))
+			date_str = d.strftime("%B %Y")
+		except Exception:
+			date_str = published[:7]
 
-def _key_release_notes(repo: str, token: str) -> str:
-	data = _gh_get(f"repos/{repo}/releases/latest", token)
-	body = data.get("body", "") if isinstance(data, dict) else ""
+	body = data.get("body", "")
 	key_lines = [ln.strip() for ln in body.splitlines() if ln.strip() and _KEYWORD_RE.search(ln)]
-	if key_lines:
-		return "\n".join(key_lines[:20])
-	return "\n".join(ln.strip() for ln in body.splitlines() if ln.strip())[:400]
+	notes = "\n".join(key_lines[:20]) if key_lines else "\n".join(ln.strip() for ln in body.splitlines() if ln.strip())[:500]
+	return {"tag": tag, "date": date_str, "notes": notes}
 
 
 def build_versions_context(deps: list[dict[str, str]], token: str) -> str:
-	"""Build a markdown block comparing pinned vs latest version for each dependency."""
-	lines = ["## Project dependencies (Package.resolved) vs latest GitHub releases"]
+	"""Build a markdown block with verified latest versions for each dependency.
+
+	The output is used verbatim as ground-truth context for the AI — it must
+	include release dates so the model never has to invent them.
+	"""
+	today = dt.date.today().strftime("%B %Y")
+	lines = [
+		f"## Verified latest versions — fetched live from GitHub on {today}",
+		"IMPORTANT: These are the ONLY authoritative version numbers and dates.",
+		"Do NOT use any other version numbers or dates in patches.",
+	]
 	for dep in deps:
-		latest = _latest_tag(dep["repo"], token)
-		notes = _key_release_notes(dep["repo"], token)
+		info = _release_info(dep["repo"], token)
 		pinned = dep.get("pinned", "")
-		status = f"pinned {pinned} → latest {latest}" if pinned else f"latest {latest}"
+		date_part = f" ({info['date']})" if info["date"] else ""
+		status = f"pinned `{pinned}` → **latest `{info['tag']}`{date_part}**" if pinned else f"**latest `{info['tag']}`{date_part}**"
 		lines.append(f"\n### {dep['alias']} ({dep['repo']}) — {status}")
-		if notes:
-			lines.append(notes)
+		if info["notes"]:
+			lines.append(info["notes"])
 	return "\n".join(lines)
+
+
+_VERSION_RE = re.compile(r"\b\d+\.\d+(?:\.\d+)*\b")
+
+
+def _versions_in_context(versions: str) -> set[str]:
+	"""Extract all version strings present in the verified versions context."""
+	return set(_VERSION_RE.findall(versions))
 
 
 # --- GitHub Models API ---
@@ -218,13 +242,23 @@ def build_versions_context(deps: list[dict[str, str]], token: str) -> str:
 
 def ask_ai_for_patches(skill_name: str, file_rel: str, content: str, versions: str, token: str, model: str) -> dict[str, Any]:
 	"""Ask GitHub Models to review one skill file and return proposed patches."""
+	today = dt.date.today().isoformat()
 	system = (
-		"You are a technical writer maintaining AI skill guidance files for a software team. "
-		"Review the skill file and propose EXACT inline patches where content references outdated "
-		"versions, deprecated APIs, or removed patterns based on the library versions provided. "
-		f"Rules: max {_MAX_PATCHES} patches; old_text must appear EXACTLY ONCE verbatim in the file; "
-		"preserve markdown formatting in new_text; be conservative — only propose changes you can "
-		"cite from the version info. "
+		f"You are a technical writer maintaining AI skill guidance files. Today's date: {today}. "
+		"Review the skill file and propose EXACT inline patches ONLY where content states a version "
+		"number that is LOWER than the latest version shown in the 'Verified latest versions' context. "
+		"STRICT RULES — violating any rule means the patch will be rejected: "
+		"1. VERSION NUMBERS: Use ONLY version numbers explicitly listed in the 'Verified latest versions' "
+		"context above. NEVER recall or invent version numbers from your training data. "
+		"2. DATES: Use ONLY dates explicitly listed in the 'Verified latest versions' context. "
+		"If no date is listed for a dependency, OMIT the date — do not guess or invent one. "
+		"3. ACCURACY CHECK: If the skill file already states the correct latest version, do NOT "
+		"propose a patch for that line. "
+		"4. SCOPE: Only patch version references. Do not rewrite prose, change architecture, or "
+		"alter code examples for any other reason. "
+		f"5. LIMIT: max {_MAX_PATCHES} patches total. "
+		"6. old_text must appear EXACTLY ONCE verbatim in the file. "
+		"7. Preserve all markdown formatting in new_text. "
 		'Return JSON only: {"patches": [{"old_text": "...", "new_text": "...", "reason": "..."}], "summary": "..."}'
 	)
 	truncated = content[:_MAX_CONTENT] + ("\n...[truncated]" if len(content) > _MAX_CONTENT else "")
@@ -293,16 +327,20 @@ def apply_patches(
 	original: str,
 	*,
 	allowed_path_re: re.Pattern[str] = _ALLOWED_PATH,
+	versions_ctx: str = "",
 ) -> tuple[int, int, int]:
 	"""Apply patches with exact-match enforcement. Returns (applied, skipped, ambiguous).
 
 	Rejects writes to any path outside the allowed skill directories.
 	Skips patches where old_text is not found or appears more than once.
+	Rejects patches that introduce version numbers not present in the verified versions context.
 	"""
 	if not allowed_path_re.match(file_rel):
 		for p in patches:
 			p["_status"] = "rejected_path"
 		return 0, len(patches), 0
+
+	allowed_versions = _versions_in_context(versions_ctx) if versions_ctx else set()
 
 	content, applied, skipped, ambiguous = original, 0, 0, 0
 	for p in patches:
@@ -310,7 +348,18 @@ def apply_patches(
 		if not old:
 			p["_status"] = "skipped_empty"
 			skipped += 1
-		elif content.count(old) == 1:
+			continue
+
+		# Reject patches that introduce version strings not grounded in the verified context.
+		if allowed_versions:
+			introduced = _VERSION_RE.findall(new)
+			ungrounded = [v for v in introduced if v not in allowed_versions]
+			if ungrounded:
+				p["_status"] = f"rejected_ungrounded_versions:{','.join(ungrounded)}"
+				skipped += 1
+				continue
+
+		if content.count(old) == 1:
 			content = content.replace(old, new, 1)
 			p["_status"] = "applied"
 			applied += 1
@@ -426,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
 		skill_name = oss_skill_name if args.oss else skill_path.parent.name
 		content = skill_path.read_text(encoding="utf-8")
 		data = ask_ai_for_patches(skill_name, file_rel, content, versions_ctx, token, args.model)
-		applied, skipped, ambiguous = apply_patches(data.get("patches", []), skill_path, file_rel, content, allowed_path_re=allowed_re)
+		applied, skipped, ambiguous = apply_patches(data.get("patches", []), skill_path, file_rel, content, allowed_path_re=allowed_re, versions_ctx=versions_ctx)
 		total_applied += applied
 		total_skipped += skipped
 		total_ambiguous += ambiguous
