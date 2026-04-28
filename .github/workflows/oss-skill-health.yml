@@ -76,12 +76,12 @@ jobs:
       has_findings: ${{ steps.counts.outputs.has_findings }}
     steps:
       - name: Checkout skill repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Checkout skills-evolution tools
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.tools_repo }}
           ref: ${{ inputs.tools_ref }}
@@ -155,7 +155,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        uses: actions/upload-artifact@v4
         with:
           name: oss-skill-health-${{ github.run_id }}
           path: outputs/
