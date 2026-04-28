@@ -103,10 +103,11 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
           GH_TOKEN: ${{ secrets.token }}
+          TRACKED_DEPS: ${{ inputs.tracked_deps }}
         run: |
-          DEPS_ARG=""
-          if [[ -n "${{ inputs.tracked_deps }}" ]]; then
-            DEPS_ARG="--tracked-deps '${{ inputs.tracked_deps }}'"
+          DEPS_ARGS=()
+          if [[ -n "$TRACKED_DEPS" ]]; then
+            DEPS_ARGS=(--tracked-deps "$TRACKED_DEPS")
           fi
           python3 -m skills_evolution.ai_updater \
             --repo-root . \
@@ -115,7 +116,7 @@ jobs:
             --model "${{ inputs.ai_model }}" \
             --max-skills "${{ inputs.max_skills }}" \
             --oss \
-            $DEPS_ARG | tee -a "$GITHUB_STEP_SUMMARY"
+            "${DEPS_ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Combine report
         id: counts
