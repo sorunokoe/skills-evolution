@@ -1,5 +1,5 @@
 name: skills-evolution
-description: Keep your AI skill files accurate, up to date, and evolving — automatically. Audits structure, checks version drift, patches with AI, opens a PR.
+description: Audit, patch, and evolve your AI skill files automatically — version checks, AI updates, and PRs on a schedule.
 
 branding:
   icon: trending-up
