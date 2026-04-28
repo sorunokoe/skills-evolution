@@ -143,16 +143,20 @@ jobs:
           fi
           git commit -m "chore(skill): health report $(date -u +%Y-%m)"
           git push --force origin "$BRANCH_NAME"
+          echo "Branch pushed: $BRANCH_NAME" >> "$GITHUB_STEP_SUMMARY"
           TITLE="chore(skill): health report $(date -u +%Y-%m)"
           BODY_FILE="outputs/skills-health-summary.md"
           if gh pr view "$BRANCH_NAME" --json number --jq .number >/dev/null 2>&1; then
-            gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE"
+            gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE" \
+              && echo "PR updated." >> "$GITHUB_STEP_SUMMARY" || true
           else
             gh pr create \
               --title "$TITLE" \
               --body-file "$BODY_FILE" \
               --base main \
-              --head "$BRANCH_NAME"
+              --head "$BRANCH_NAME" \
+              && echo "PR created." >> "$GITHUB_STEP_SUMMARY" \
+              || echo "⚠️ PR creation skipped (enable 'Allow GitHub Actions to create pull requests' in repo Settings → Actions → General)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload artifacts
