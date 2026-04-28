@@ -1,25 +1,130 @@
-name: Publish committed skill traces
-description: Move committed .github/.skill-trace.ndjson entries into the PR hidden body block.
+name: skills-evolution
+description: Keep your AI skill files accurate, up to date, and evolving — automatically. Audits structure, checks version drift, patches with AI, opens a PR.
+
+branding:
+  icon: trending-up
+  color: green
 
 inputs:
-  repo:
-    description: GitHub repository in owner/name format.
-    required: true
-  pr-number:
-    description: Pull request number.
-    required: true
   token:
-    description: GitHub token with pull-requests write and contents write.
+    description: GitHub token with contents:write and pull-requests:write.
     required: true
+  repo-root:
+    description: Path to the repository root containing SKILL.md (or .github/skills/).
+    required: false
+    default: "."
+  enable-ai-update:
+    description: Fetch latest library versions and patch stale references with AI.
+    required: false
+    default: "false"
+  ai-model:
+    description: "GitHub Models model ID to use for AI patches (default: gpt-4o)."
+    required: false
+    default: "gpt-4o"
+  open-pr:
+    description: Open a pull request when findings are detected.
+    required: false
+    default: "true"
+  oss:
+    description: Set to 'true' for standalone skill repos where SKILL.md lives at the repo root.
+    required: false
+    default: "false"
+
+outputs:
+  findings-count:
+    description: Total number of findings (version patches + structural issues).
+    value: ${{ steps.combine.outputs.findings_count }}
+  has-findings:
+    description: "true if any findings were detected."
+    value: ${{ steps.combine.outputs.has_findings }}
 
 runs:
   using: composite
   steps:
-    - shell: bash
+    - name: Run skill audit
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/src
+      run: |
+        OSS_FLAG=""
+        if [[ "${{ inputs.oss }}" == "true" ]]; then
+          OSS_FLAG="--oss"
+        fi
+        mkdir -p outputs
+        python3 -m skills_evolution.health audit \
+          --repo-root "${{ inputs.repo-root }}" \
+          --output-dir outputs \
+          --apply-autofix \
+          $OSS_FLAG
+
+    - name: AI skill content update
+      if: inputs.enable-ai-update == 'true'
+      shell: bash
       env:
         PYTHONPATH: ${{ github.action_path }}/src
         GH_TOKEN: ${{ inputs.token }}
       run: |
-        python3 -m skills_evolution.cli fallback \
-          --repo "${{ inputs.repo }}" \
-          --pr-number "${{ inputs.pr-number }}"
+        OSS_FLAG=""
+        if [[ "${{ inputs.oss }}" == "true" ]]; then
+          OSS_FLAG="--oss"
+        fi
+        python3 -m skills_evolution.ai_updater \
+          --repo-root "${{ inputs.repo-root }}" \
+          --output-dir outputs \
+          --token "$GH_TOKEN" \
+          --model "${{ inputs.ai-model }}" \
+          $OSS_FLAG
+
+    - name: Combine reports
+      id: combine
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/src
+      run: |
+        EVO_CURRENT=$(python3 -m skills_evolution.health read-evolution-num \
+          --repo-root "${{ inputs.repo-root }}" | grep -oP '(?<=evolution_num=)\d+' || echo 0)
+        EVO_NEXT=$((EVO_CURRENT + 1))
+        python3 -m skills_evolution.health combine \
+          --output-dir outputs \
+          --evolution-num "$EVO_NEXT" > outputs/skills-health-counts.env
+        cat outputs/skills-health-counts.env >> "$GITHUB_OUTPUT"
+        echo "evolution_num=$EVO_NEXT" >> "$GITHUB_OUTPUT"
+
+    - name: Commit and open PR
+      if: steps.combine.outputs.has_findings == 'true' && inputs.open-pr == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        PYTHONPATH: ${{ github.action_path }}/src
+        EVOLUTION_NUM: ${{ steps.combine.outputs.evolution_num }}
+      run: |
+        BRANCH_NAME="skills-health/$(date -u +%Y-%m)"
+        REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pulls?q=is%3Apr+is%3Amerged"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -B "$BRANCH_NAME"
+        python3 -m skills_evolution.health update-badge \
+          --repo-root "${{ inputs.repo-root }}" \
+          --evolution-num "$EVOLUTION_NUM" \
+          --repo-url "$REPO_URL"
+        git add SKILL.md references/ README.md 2>/dev/null || true
+        if git diff --cached --quiet; then
+          echo "No changes to commit."
+          exit 0
+        fi
+        git commit -m "chore(skill): health report $(date -u +%Y-%m)"
+        git push --force origin "$BRANCH_NAME"
+        TITLE="chore(skill): health report $(date -u +%Y-%m)"
+        BODY_FILE="outputs/skills-health-summary.md"
+        PR_STATE=$(gh pr view "$BRANCH_NAME" --json state --jq .state 2>/dev/null || echo "NONE")
+        if [ "$PR_STATE" = "OPEN" ]; then
+          gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE" || true
+        else
+          gh pr create \
+            --title "$TITLE" \
+            --body-file "$BODY_FILE" \
+            --base main \
+            --head "$BRANCH_NAME" \
+            || echo "⚠️ PR creation skipped — enable 'Allow GitHub Actions to create pull requests' in repo Settings → Actions → General." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
