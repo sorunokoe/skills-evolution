@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skills-evolution"
-version = "0.1.8"
-description = "Shared tooling for AI skill traces, PR-body publish, and skills evolution workflows."
+version = "0.2.0"
+description = "Keep your AI skill files accurate, up to date, and evolving — automatically."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "TrackMan" }]
