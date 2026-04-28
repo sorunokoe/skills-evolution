@@ -1,4 +1,4 @@
-name: OSS Skill Health
+name: OSS Skill Health (Reusable)
 # Reusable workflow for open-source skill repositories where SKILL.md lives at the repo root.
 # Usage — add a caller workflow to your skill repo, e.g. .github/workflows/skill-health.yml:
 #

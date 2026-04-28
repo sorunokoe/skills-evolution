@@ -1,7 +1,6 @@
-name: Skills Trace Fallback Capture
+name: Skills Trace Fallback Capture (Reusable)
 
 on:
-  workflow_dispatch:
   workflow_call:
     inputs:
       repo:

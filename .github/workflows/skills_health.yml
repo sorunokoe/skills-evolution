@@ -1,4 +1,4 @@
-name: Skills Health
+name: Skills Health (Reusable)
 # Reusable workflow — the consumer's wrapper defines when this runs.
 # Example wrapper trigger:
 #   on:
@@ -7,7 +7,6 @@ name: Skills Health
 #     workflow_dispatch:        # manual trigger
 
 on:
-  workflow_dispatch:
   workflow_call:
     inputs:
       since_days:
