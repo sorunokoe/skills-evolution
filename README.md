@@ -2,7 +2,7 @@
 
 # skills-evolution
 
-<img src="skills-evolution.png" alt="skills-evolution logo: a growing plant from seed to flourishing bush" width="300">
+<img src="skills-evolution.png" alt="skills-evolution logo: a growing plant from seed to flourishing bush" width="450">
 
 **Keep your AI skill files accurate, up to date, and evolving — automatically.**
 
