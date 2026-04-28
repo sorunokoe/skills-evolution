@@ -120,6 +120,15 @@ This tool has a **standalone mode** for repos where:
 - Supporting content goes in `references/` and `examples/` directories
 - You want the same version tracking and AI reviews, but for a single published skill
 
+### Required GitHub repository settings
+
+Before the monthly health workflow can open PRs automatically, enable this in **each skill repo**:
+
+> **Settings → Actions → General → Workflow permissions**  
+> ✅ Check **"Allow GitHub Actions to create and approve pull requests"**
+
+Without this, the workflow still runs and pushes the update branch — but you'll need to open the PR manually.
+
 ### Integration
 
 **Using GitHub Actions workflows:**
