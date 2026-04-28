@@ -15,9 +15,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .health import iter_skill_files
+from .health import iter_skill_files, iter_oss_skill_files
 
 _ALLOWED_PATH = re.compile(r"^(\.github|\.claude)/skills/[a-z0-9\-]+/SKILL\.md$")
+_ALLOWED_PATH_OSS = re.compile(r"^(SKILL\.md|references/[A-Za-z0-9._-]+\.md)$")
 _KEYWORD_RE = re.compile(r"(?i)(breaking|deprecated|removed|migration|api change|incompatible|renamed)")
 _GITHUB_API = "https://api.github.com"
 _MODELS_URL = "https://models.inference.ai.azure.com/chat/completions"
@@ -248,13 +249,57 @@ def ask_ai_for_patches(skill_name: str, file_rel: str, content: str, versions: s
 # --- Patch application ---
 
 
-def apply_patches(patches: list[dict[str, str]], file_path: Path, file_rel: str, original: str) -> tuple[int, int, int]:
+def _extract_oss_skill_name(repo_root: Path) -> str:
+	"""Extract skill name from root SKILL.md frontmatter, falling back to directory name.
+
+	OSS skill repos must not rely on the checkout directory name for their identity —
+	CI can check out to "workspace" or any arbitrary name.
+	"""
+	skill_file = repo_root / "SKILL.md"
+	if not skill_file.exists():
+		return repo_root.name
+	try:
+		content = skill_file.read_text(encoding="utf-8")
+	except OSError:
+		return repo_root.name
+	match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
+	if not match:
+		return repo_root.name
+	for line in match.group(1).splitlines():
+		if ":" in line:
+			key, val = line.split(":", 1)
+			if key.strip() == "name":
+				return val.strip().strip("'\"")
+	return repo_root.name
+
+
+def _iter_oss_skill_files(repo_root: Path) -> list[Path]:
+	"""Discover SKILL.md and references/*.md for an OSS skill repo AI update pass."""
+	files: list[Path] = []
+	root_skill = repo_root / "SKILL.md"
+	if not root_skill.exists():
+		return files
+	files.append(root_skill)
+	refs_dir = repo_root / "references"
+	if refs_dir.is_dir():
+		files.extend(sorted(refs_dir.glob("*.md")))
+	return files
+
+
+def apply_patches(
+	patches: list[dict[str, str]],
+	file_path: Path,
+	file_rel: str,
+	original: str,
+	*,
+	allowed_path_re: re.Pattern[str] = _ALLOWED_PATH,
+) -> tuple[int, int, int]:
 	"""Apply patches with exact-match enforcement. Returns (applied, skipped, ambiguous).
 
 	Rejects writes to any path outside the allowed skill directories.
 	Skips patches where old_text is not found or appears more than once.
 	"""
-	if not _ALLOWED_PATH.match(file_rel):
+	if not allowed_path_re.match(file_rel):
 		for p in patches:
 			p["_status"] = "rejected_path"
 		return 0, len(patches), 0
@@ -328,6 +373,11 @@ def main(argv: list[str] | None = None) -> int:
 	parser.add_argument("--tracked-deps", default="", help="JSON array [{alias, repo}] — overrides auto-discovery")
 	parser.add_argument("--model", default="gpt-4o-mini", help="GitHub Models model ID")
 	parser.add_argument("--max-skills", type=int, default=15, help="Max skill files to process per run")
+	parser.add_argument(
+		"--oss",
+		action="store_true",
+		help="OSS skill repo mode: look for SKILL.md at root and references/*.md.",
+	)
 	args = parser.parse_args(argv)
 
 	repo_root = Path(args.repo_root).resolve()
@@ -353,22 +403,36 @@ def main(argv: list[str] | None = None) -> int:
 		if proposals:
 			versions_ctx += f"\n\n## PR feedback proposals (for context)\n{json.dumps(proposals[:8], indent=2)}"
 
-	# 3. Process each skill file — one GitHub Models call per skill.
-	skill_files = iter_skill_files(repo_root)[: args.max_skills]
+	# 3. Discover skill files and resolve mode-specific settings.
+	if args.oss:
+		skill_files = _iter_oss_skill_files(repo_root)[: args.max_skills]
+		oss_skill_name = _extract_oss_skill_name(repo_root)
+		allowed_re = _ALLOWED_PATH_OSS
+		if not skill_files:
+			print("ai_update_status=skipped_no_skill_md")
+			return 0
+	else:
+		skill_files = iter_skill_files(repo_root)[: args.max_skills]
+		oss_skill_name = None
+		allowed_re = _ALLOWED_PATH
+
+	# 4. Process each skill file — one GitHub Models call per skill.
 	results: list[dict[str, Any]] = []
 	total_applied = total_skipped = total_ambiguous = 0
 
 	for skill_path in skill_files:
-		file_rel = str(skill_path.relative_to(repo_root))
+		# Use .as_posix() in OSS mode so paths are always forward-slash (CI-safe).
+		file_rel = skill_path.relative_to(repo_root).as_posix() if args.oss else str(skill_path.relative_to(repo_root))
+		skill_name = oss_skill_name if args.oss else skill_path.parent.name
 		content = skill_path.read_text(encoding="utf-8")
-		data = ask_ai_for_patches(skill_path.parent.name, file_rel, content, versions_ctx, token, args.model)
-		applied, skipped, ambiguous = apply_patches(data.get("patches", []), skill_path, file_rel, content)
+		data = ask_ai_for_patches(skill_name, file_rel, content, versions_ctx, token, args.model)
+		applied, skipped, ambiguous = apply_patches(data.get("patches", []), skill_path, file_rel, content, allowed_path_re=allowed_re)
 		total_applied += applied
 		total_skipped += skipped
 		total_ambiguous += ambiguous
-		results.append({"skill": skill_path.parent.name, "file": file_rel, **data, "applied": applied})
+		results.append({"skill": skill_name, "file": file_rel, **data, "applied": applied})
 
-	# 4. Write reports.
+	# 5. Write reports.
 	report = {
 		"generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
 		"skills_changed": sum(1 for r in results if r.get("applied", 0) > 0),

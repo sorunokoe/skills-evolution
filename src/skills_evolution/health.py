@@ -144,6 +144,35 @@ def iter_skill_files(repo_root: Path) -> list[Path]:
 	return result
 
 
+def iter_oss_skill_files(repo_root: Path) -> list[Path]:
+	"""Return [SKILL.md] from the root of an open-source skill repository.
+
+	Returns an empty list if SKILL.md is missing at the repo root.
+	Callers should treat an empty result as a configuration error, not a silent no-op.
+	"""
+	skill_file = repo_root / "SKILL.md"
+	if skill_file.exists():
+		return [skill_file]
+	return []
+
+
+def iter_oss_markdown_files(skill_root: Path) -> list[Path]:
+	"""Return authoritative skill content files for an OSS skill repo.
+
+	Scope: SKILL.md at root + all *.md files under references/.
+	Intentionally excludes README.md, AGENTS.md, CONTRIBUTING.md, CHANGELOG.md
+	— those are repository docs, not authoritative skill content.
+	"""
+	result: list[Path] = []
+	root_skill = skill_root / "SKILL.md"
+	if root_skill.exists():
+		result.append(root_skill)
+	refs_dir = skill_root / "references"
+	if refs_dir.is_dir():
+		result.extend(sorted(refs_dir.glob("*.md")))
+	return result
+
+
 def iter_markdown_files(skill_dir: Path) -> list[Path]:
 	return sorted(skill_dir.rglob("*.md"))
 
@@ -226,12 +255,27 @@ def maybe_fix_link(md_file: Path, skill_dir: Path, broken_link: str) -> str | No
 	return rel
 
 
-def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
-	skill_files = iter_skill_files(repo_root)
+def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool, oss: bool = False) -> int:
+	if oss:
+		skill_files = iter_oss_skill_files(repo_root)
+	else:
+		skill_files = iter_skill_files(repo_root)
+
 	findings: list[Finding] = []
 	skill_name_to_paths: dict[str, list[Path]] = defaultdict(list)
 	autofix_changes = 0
 	link_fixes: list[dict[str, str]] = []
+
+	if oss and not skill_files:
+		findings.append(
+			Finding(
+				type="MISSING_SKILL_FILE",
+				severity="error",
+				skill=repo_root.name,
+				file="SKILL.md",
+				message="SKILL.md not found at repository root. Open-source skill repos must have SKILL.md at the root.",
+			)
+		)
 
 	for skill_file in skill_files:
 		skill_dir = skill_file.parent
@@ -239,12 +283,19 @@ def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
 		content = read_text(skill_file)
 		frontmatter, _, _ = parse_frontmatter(content)
 
+		# In OSS mode use frontmatter name as the canonical identifier; the checkout
+		# directory name is not meaningful (e.g., "workspace" on CI).
+		if oss and frontmatter:
+			effective_skill = frontmatter.get("name") or folder_name
+		else:
+			effective_skill = folder_name
+
 		if not frontmatter:
 			findings.append(
 				Finding(
 					type="METADATA_DRIFT",
 					severity="error",
-					skill=folder_name,
+					skill=effective_skill,
 					file=str(skill_file.relative_to(repo_root)),
 					message="Missing YAML frontmatter block.",
 				)
@@ -256,7 +307,7 @@ def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
 						Finding(
 							type="METADATA_DRIFT",
 							severity="error",
-							skill=folder_name,
+							skill=effective_skill,
 							file=str(skill_file.relative_to(repo_root)),
 							message=f"Missing required frontmatter field: {field}",
 						)
@@ -265,12 +316,14 @@ def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
 			name = frontmatter.get("name", "")
 			if name:
 				skill_name_to_paths[name].append(skill_file)
-				if name != folder_name:
+				# Name/folder mismatch is intentional in OSS mode — the repo can be
+				# checked out to any directory name on CI.
+				if not oss and name != folder_name:
 					findings.append(
 						Finding(
 							type="METADATA_DRIFT",
 							severity="warning",
-							skill=folder_name,
+							skill=effective_skill,
 							file=str(skill_file.relative_to(repo_root)),
 							message=f"Frontmatter name '{name}' does not match folder '{folder_name}'.",
 							autofixable=True,
@@ -284,7 +337,8 @@ def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
 							content = new_content
 							autofix_changes += 1
 
-		for md_file in iter_markdown_files(skill_dir):
+		md_files = iter_oss_markdown_files(skill_dir) if oss else iter_markdown_files(skill_dir)
+		for md_file in md_files:
 			md_content = read_text(md_file)
 			for idx, line in enumerate(md_content.splitlines(), start=1):
 				for _, link in LINK_RE.findall(line):
@@ -295,7 +349,7 @@ def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
 					finding = Finding(
 						type="BROKEN_LINK",
 						severity="warning",
-						skill=folder_name,
+						skill=effective_skill,
 						file=rel_file,
 						line=idx,
 						message=f"Broken local markdown link: {link}",
@@ -328,30 +382,33 @@ def audit_skills(repo_root: Path, output_dir: Path, apply_autofix: bool) -> int:
 					)
 				)
 
-	copilot_instructions = repo_root / ".github" / "copilot-instructions.md"
-	if copilot_instructions.exists():
-		table_skills = set(TABLE_SKILL_RE.findall(read_text(copilot_instructions)))
-		folder_skills = {p.parent.name for p in skill_files}
-		for skill in sorted(folder_skills - table_skills):
-			findings.append(
-				Finding(
-					type="REGISTRY_DRIFT",
-					severity="warning",
-					skill=skill,
-					file=".github/copilot-instructions.md",
-					message=f"Skill '{skill}' exists in .github/skills but is missing from the skills table.",
+	# REGISTRY_DRIFT is only meaningful in consumer repos where a skills table
+	# is expected in .github/copilot-instructions.md. Skip in OSS mode.
+	if not oss:
+		copilot_instructions = repo_root / ".github" / "copilot-instructions.md"
+		if copilot_instructions.exists():
+			table_skills = set(TABLE_SKILL_RE.findall(read_text(copilot_instructions)))
+			folder_skills = {p.parent.name for p in skill_files}
+			for skill in sorted(folder_skills - table_skills):
+				findings.append(
+					Finding(
+						type="REGISTRY_DRIFT",
+						severity="warning",
+						skill=skill,
+						file=".github/copilot-instructions.md",
+						message=f"Skill '{skill}' exists in .github/skills but is missing from the skills table.",
+					)
 				)
-			)
-		for skill in sorted(table_skills - folder_skills):
-			findings.append(
-				Finding(
-					type="REGISTRY_DRIFT",
-					severity="warning",
-					skill=skill,
-					file=".github/copilot-instructions.md",
-					message=f"Skill '{skill}' is listed in the skills table but folder is missing.",
+			for skill in sorted(table_skills - folder_skills):
+				findings.append(
+					Finding(
+						type="REGISTRY_DRIFT",
+						severity="warning",
+						skill=skill,
+						file=".github/copilot-instructions.md",
+						message=f"Skill '{skill}' is listed in the skills table but folder is missing.",
+					)
 				)
-			)
 
 	by_type = Counter(f.type for f in findings)
 	output = {
@@ -879,6 +936,11 @@ def main(argv: list[str] | None = None) -> int:
 	audit.add_argument("--repo-root", required=True)
 	audit.add_argument("--output-dir", required=True)
 	audit.add_argument("--apply-autofix", action="store_true")
+	audit.add_argument(
+		"--oss",
+		action="store_true",
+		help="Audit an open-source skill repo where SKILL.md is at the repository root.",
+	)
 
 	collect = sub.add_parser("collect-feedback")
 	collect.add_argument("--repo", required=True)
@@ -896,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
 
 	args = parser.parse_args(argv)
 	if args.command == "audit":
-		findings = audit_skills(Path(args.repo_root), Path(args.output_dir), args.apply_autofix)
+		findings = audit_skills(Path(args.repo_root), Path(args.output_dir), args.apply_autofix, oss=args.oss)
 		print(f"findings_count={findings}")
 		return 0
 	if args.command == "collect-feedback":

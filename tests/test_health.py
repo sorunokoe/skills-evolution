@@ -110,5 +110,129 @@ class HealthTests(unittest.TestCase):
 			self.assertIn("gap=2", report)
 
 
+class OssSkillFilesTests(unittest.TestCase):
+	def _make_oss_repo(self, tmp_dir: str, with_skill: bool = True, with_refs: bool = True) -> Path:
+		repo_root = Path(tmp_dir) / "swift-kmp"
+		repo_root.mkdir(parents=True)
+		if with_skill:
+			(repo_root / "SKILL.md").write_text(
+				"---\nname: swift-kmp\ndescription: KMP bridge patterns\napplyTo: '**/*.swift'\n---\n",
+				encoding="utf-8",
+			)
+			(repo_root / "README.md").write_text("# swift-kmp\n", encoding="utf-8")
+		if with_refs:
+			refs = repo_root / "references"
+			refs.mkdir()
+			(refs / "architecture.md").write_text("# Architecture\n", encoding="utf-8")
+			(refs / "flow-bridging.md").write_text("# Flow\n", encoding="utf-8")
+		return repo_root
+
+	def test_iter_oss_skill_files_found(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = self._make_oss_repo(tmp)
+			files = health.iter_oss_skill_files(repo_root)
+			self.assertEqual(len(files), 1)
+			self.assertEqual(files[0].name, "SKILL.md")
+			self.assertEqual(files[0].parent, repo_root)
+
+	def test_iter_oss_skill_files_missing(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = self._make_oss_repo(tmp, with_skill=False)
+			files = health.iter_oss_skill_files(repo_root)
+			self.assertEqual(files, [])
+
+	def test_iter_oss_markdown_files_includes_skill_and_refs(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = self._make_oss_repo(tmp)
+			files = health.iter_oss_markdown_files(repo_root)
+			names = [f.name for f in files]
+			self.assertIn("SKILL.md", names)
+			self.assertIn("architecture.md", names)
+			self.assertIn("flow-bridging.md", names)
+			# README.md must not be included
+			self.assertNotIn("README.md", names)
+
+	def test_iter_oss_markdown_files_excludes_readme(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = self._make_oss_repo(tmp)
+			files = health.iter_oss_markdown_files(repo_root)
+			self.assertFalse(any(f.name == "README.md" for f in files))
+
+	def test_iter_oss_markdown_files_without_refs_dir(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = self._make_oss_repo(tmp, with_refs=False)
+			files = health.iter_oss_markdown_files(repo_root)
+			self.assertEqual([f.name for f in files], ["SKILL.md"])
+
+
+class OssAuditModeTests(unittest.TestCase):
+	def _make_oss_repo(self, tmp_dir: str, skill_content: str | None = None) -> tuple[Path, Path]:
+		repo_root = Path(tmp_dir) / "swift-kmp"
+		repo_root.mkdir(parents=True)
+		output_dir = Path(tmp_dir) / "output"
+		output_dir.mkdir()
+		if skill_content is not None:
+			(repo_root / "SKILL.md").write_text(skill_content, encoding="utf-8")
+		return repo_root, output_dir
+
+	def test_audit_oss_missing_skill_md_emits_error(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root, output_dir = self._make_oss_repo(tmp, skill_content=None)
+			findings_count = health.audit_skills(repo_root, output_dir, apply_autofix=False, oss=True)
+			self.assertGreater(findings_count, 0)
+			audit = json.loads((output_dir / "skills-audit.json").read_text(encoding="utf-8"))
+			types = [f["type"] for f in audit["findings"]]
+			self.assertIn("MISSING_SKILL_FILE", types)
+
+	def test_audit_oss_valid_skill_no_findings(self) -> None:
+		content = "---\nname: swift-kmp\ndescription: KMP bridge patterns\napplyTo: '**/*.swift'\n---\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root, output_dir = self._make_oss_repo(tmp, skill_content=content)
+			findings_count = health.audit_skills(repo_root, output_dir, apply_autofix=False, oss=True)
+			self.assertEqual(findings_count, 0)
+
+	def test_audit_oss_no_folder_mismatch_warning(self) -> None:
+		# name in frontmatter is "swift-kmp" but checkout dir is "workspace" — must not warn
+		content = "---\nname: swift-kmp\ndescription: KMP patterns\napplyTo: '**/*.swift'\n---\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			# Use "workspace" as the checkout dir name to simulate CI
+			repo_root = Path(tmp) / "workspace"
+			repo_root.mkdir()
+			output_dir = Path(tmp) / "output"
+			output_dir.mkdir()
+			(repo_root / "SKILL.md").write_text(content, encoding="utf-8")
+			findings_count = health.audit_skills(repo_root, output_dir, apply_autofix=False, oss=True)
+			self.assertEqual(findings_count, 0)
+			audit = json.loads((output_dir / "skills-audit.json").read_text(encoding="utf-8"))
+			types = [f["type"] for f in audit["findings"]]
+			self.assertNotIn("METADATA_DRIFT", types)
+
+	def test_audit_oss_no_registry_drift_check(self) -> None:
+		content = "---\nname: swift-kmp\ndescription: KMP patterns\napplyTo: '**/*.swift'\n---\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root, output_dir = self._make_oss_repo(tmp, skill_content=content)
+			# Add a copilot-instructions.md that does NOT list the skill — in OSS mode
+			# this should be completely ignored.
+			gh = repo_root / ".github"
+			gh.mkdir()
+			(gh / "copilot-instructions.md").write_text("# Instructions\nNo skills table here.\n", encoding="utf-8")
+			findings_count = health.audit_skills(repo_root, output_dir, apply_autofix=False, oss=True)
+			self.assertEqual(findings_count, 0)
+			audit = json.loads((output_dir / "skills-audit.json").read_text(encoding="utf-8"))
+			types = [f["type"] for f in audit["findings"]]
+			self.assertNotIn("REGISTRY_DRIFT", types)
+
+	def test_audit_oss_uses_frontmatter_name_as_skill_label(self) -> None:
+		# Incomplete frontmatter — name missing → finding should be labeled with fallback
+		content = "---\ndescription: KMP patterns\napplyTo: '**/*.swift'\n---\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root, output_dir = self._make_oss_repo(tmp, skill_content=content)
+			findings_count = health.audit_skills(repo_root, output_dir, apply_autofix=False, oss=True)
+			self.assertGreater(findings_count, 0)
+			audit = json.loads((output_dir / "skills-audit.json").read_text(encoding="utf-8"))
+			# skill label should be the repo dir name (fallback) since name: is missing
+			self.assertTrue(any(f["skill"] for f in audit["findings"]))
+
+
 if __name__ == "__main__":
 	unittest.main()

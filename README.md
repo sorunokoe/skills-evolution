@@ -75,6 +75,76 @@ jobs:
 
 ---
 
+## For open-source skill maintainers
+
+If you publish a standalone AI skill repository (like [swift-kmp-skill](https://github.com/sorunokoe/swift-kmp-skill)),
+skills-evolution can keep your skill files current using the `--oss` flag, which expects:
+
+```
+SKILL.md          ← at the repository root
+references/       ← optional: all *.md files here are treated as authoritative skill content
+```
+
+### GitHub Actions (recommended)
+
+```yaml
+# .github/workflows/skill-health.yml
+name: Skill Health
+on:
+  schedule:
+    - cron: "0 3 1 * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  models: read
+jobs:
+  health:
+    uses: sorunokoe/skills-evolution/.github/workflows/oss_skill_health.yml@latest
+    with:
+      tools_ref: latest
+      enable_ai_skill_update: true   # optional: AI version-patch pass
+    secrets:
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The workflow audits `SKILL.md` and `references/*.md`, optionally patches version references
+via GitHub Models, and opens a PR if any changes are needed.
+
+### gh-aw agentic workflow
+
+Copy [`workflows/oss-skill-update.md`](workflows/oss-skill-update.md) into your skill repo
+and install it with `gh aw add`:
+
+```bash
+# From your skill repo root:
+gh aw add oss-skill-update
+```
+
+### CLI — manual run
+
+```bash
+# Audit only
+python3 -m skills_evolution.health audit --repo-root . --output-dir outputs --oss
+
+# Audit + AI version patches
+python3 -m skills_evolution.ai_updater --repo-root . --output-dir outputs --oss
+```
+
+### What changes in OSS mode
+
+| Behaviour | Default mode | `--oss` mode |
+|-----------|-------------|--------------|
+| Skill files discovered | `.github/skills/*/SKILL.md` | `SKILL.md` at root |
+| Markdown files audited | All `*.md` under skill dir | `SKILL.md` + `references/*.md` only |
+| Skill identity | Folder name | `name:` from frontmatter |
+| Name/folder mismatch check | ✅ | ❌ (CI checkout dir is arbitrary) |
+| Registry drift check | ✅ | ❌ (no copilot-instructions.md expected) |
+| Feedback collection | ✅ | ❌ (OSS PRs are maintainer edits, not usage signals) |
+| Missing `SKILL.md` | Silent (0 skills) | Error finding emitted |
+
+---
+
 ## What it does
 
 | Feature | How |

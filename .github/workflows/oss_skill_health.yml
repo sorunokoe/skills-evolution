@@ -1,0 +1,160 @@
+name: OSS Skill Health
+# Reusable workflow for open-source skill repositories where SKILL.md lives at the repo root.
+# Usage — add a caller workflow to your skill repo, e.g. .github/workflows/skill-health.yml:
+#
+#   on:
+#     schedule:
+#       - cron: "0 3 1 * *"   # monthly
+#     workflow_dispatch:
+#   jobs:
+#     health:
+#       uses: sorunokoe/skills-evolution/.github/workflows/oss_skill_health.yml@main
+#       secrets:
+#         github_token: ${{ secrets.GITHUB_TOKEN }}
+#
+# No feedback collection step: OSS skill repo PRs are maintainer edits, not agent usage signals.
+
+on:
+  workflow_call:
+    inputs:
+      enable_ai_skill_update:
+        required: false
+        type: boolean
+        default: false
+        # When true: fetches latest library versions from GitHub releases, calls GitHub Models
+        # (gpt-4o-mini by default) once per skill file, and applies conservative inline patches.
+        # Requires GITHUB_TOKEN to have models:read (granted automatically in Actions runners).
+      ai_model:
+        required: false
+        type: string
+        default: "gpt-4o-mini"
+        # GitHub Models model ID. See https://github.com/marketplace/models
+      tracked_deps:
+        required: false
+        type: string
+        default: ""
+        # JSON array of {alias, repo} objects to pin specific dependencies for version checking.
+        # By default, deps are discovered automatically from Package.resolved, go.mod, etc.
+      max_skills:
+        required: false
+        type: string
+        default: "15"
+      open_pr_on_findings:
+        required: false
+        type: boolean
+        default: true
+      tools_repo:
+        required: false
+        type: string
+        default: sorunokoe/skills-evolution
+      tools_ref:
+        required: false
+        type: string
+        default: main
+    secrets:
+      github_token:
+        required: true
+    outputs:
+      findings_count:
+        value: ${{ jobs.oss-skill-health.outputs.findings_count }}
+      has_findings:
+        value: ${{ jobs.oss-skill-health.outputs.has_findings }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  models: read
+
+jobs:
+  oss-skill-health:
+    name: OSS skill health check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      findings_count: ${{ steps.counts.outputs.findings_count }}
+      has_findings: ${{ steps.counts.outputs.has_findings }}
+    steps:
+      - name: Checkout skill repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Checkout skills-evolution tools
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ inputs.tools_repo }}
+          ref: ${{ inputs.tools_ref }}
+          path: .skills-evolution
+
+      - name: Run structural OSS skill audit
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
+        run: |
+          mkdir -p outputs
+          python3 -m skills_evolution.health audit \
+            --repo-root . \
+            --output-dir outputs \
+            --apply-autofix \
+            --oss
+
+      - name: AI skill content update
+        if: inputs.enable_ai_skill_update == true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
+          GH_TOKEN: ${{ secrets.github_token }}
+        run: |
+          DEPS_ARG=""
+          if [[ -n "${{ inputs.tracked_deps }}" ]]; then
+            DEPS_ARG="--tracked-deps '${{ inputs.tracked_deps }}'"
+          fi
+          python3 -m skills_evolution.ai_updater \
+            --repo-root . \
+            --output-dir outputs \
+            --token "$GH_TOKEN" \
+            --model "${{ inputs.ai_model }}" \
+            --max-skills "${{ inputs.max_skills }}" \
+            --oss \
+            $DEPS_ARG | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Combine report
+        id: counts
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
+        run: |
+          python3 -m skills_evolution.health combine --output-dir outputs > outputs/skills-health-counts.env
+          cat outputs/skills-health-counts.env >> "$GITHUB_OUTPUT"
+
+      - name: Commit autofixes and open PR
+        if: steps.counts.outputs.has_findings == 'true' && inputs.open_pr_on_findings == true
+        env:
+          GH_TOKEN: ${{ secrets.github_token }}
+        run: |
+          BRANCH_NAME="skills-health/$(date -u +%Y-%m)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH_NAME"
+          git add SKILL.md references/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            echo "NO_CHANGES=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          git commit -m "chore(skill): health report $(date -u +%Y-%m)"
+          git push --force origin "$BRANCH_NAME"
+          TITLE="chore(skill): health report $(date -u +%Y-%m)"
+          BODY_FILE="outputs/skills-health-summary.md"
+          if gh pr view "$BRANCH_NAME" --json number --jq .number >/dev/null 2>&1; then
+            gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE"
+          else
+            gh pr create \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE" \
+              --base main \
+              --head "$BRANCH_NAME"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: oss-skill-health-${{ github.run_id }}
+          path: outputs/

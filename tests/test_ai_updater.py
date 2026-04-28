@@ -249,5 +249,118 @@ class WriteReportTests(unittest.TestCase):
 			self.assertIn("TCA", md)
 
 
+class OssPathSafetyTests(unittest.TestCase):
+	def test_oss_skill_md_path_allowed(self) -> None:
+		content = "# Swift KMP\n\nUse SKIE 0.9 pattern.\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "swift-kmp"
+			repo_root.mkdir()
+			skill_path = repo_root / "SKILL.md"
+			skill_path.write_text(content, encoding="utf-8")
+			rel = skill_path.relative_to(repo_root).as_posix()
+			patches = [{"old_text": "SKIE 0.9", "new_text": "SKIE 1.0", "reason": "bump"}]
+			applied, _, _ = ai_updater.apply_patches(patches, skill_path, rel, content, allowed_path_re=ai_updater._ALLOWED_PATH_OSS)
+			self.assertEqual(applied, 1)
+			self.assertIn("SKIE 1.0", skill_path.read_text())
+
+	def test_oss_reference_path_allowed(self) -> None:
+		content = "# Flow\n\nSKIE 0.9 pattern.\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "swift-kmp"
+			refs = repo_root / "references"
+			refs.mkdir(parents=True)
+			ref_path = refs / "flow-bridging.md"
+			ref_path.write_text(content, encoding="utf-8")
+			rel = ref_path.relative_to(repo_root).as_posix()
+			self.assertEqual(rel, "references/flow-bridging.md")
+			patches = [{"old_text": "SKIE 0.9", "new_text": "SKIE 1.0", "reason": "bump"}]
+			applied, _, _ = ai_updater.apply_patches(patches, ref_path, rel, content, allowed_path_re=ai_updater._ALLOWED_PATH_OSS)
+			self.assertEqual(applied, 1)
+
+	def test_oss_readme_path_rejected(self) -> None:
+		content = "# README\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "swift-kmp"
+			repo_root.mkdir()
+			readme = repo_root / "README.md"
+			readme.write_text(content, encoding="utf-8")
+			patches = [{"old_text": "README", "new_text": "REPLACED", "reason": "test"}]
+			applied, _, _ = ai_updater.apply_patches(patches, readme, "README.md", content, allowed_path_re=ai_updater._ALLOWED_PATH_OSS)
+			self.assertEqual(applied, 0)
+			self.assertEqual(readme.read_text(), content)
+
+	def test_oss_agents_md_rejected(self) -> None:
+		content = "# AGENTS\n"
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "swift-kmp"
+			repo_root.mkdir()
+			agents = repo_root / "AGENTS.md"
+			agents.write_text(content, encoding="utf-8")
+			patches = [{"old_text": "AGENTS", "new_text": "REPLACED", "reason": "test"}]
+			applied, _, _ = ai_updater.apply_patches(patches, agents, "AGENTS.md", content, allowed_path_re=ai_updater._ALLOWED_PATH_OSS)
+			self.assertEqual(applied, 0)
+
+
+class OssSkillNameTests(unittest.TestCase):
+	def test_extracts_name_from_frontmatter(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "workspace"
+			repo_root.mkdir()
+			(repo_root / "SKILL.md").write_text(
+				"---\nname: swift-kmp\ndescription: KMP patterns\napplyTo: '**/*.swift'\n---\n",
+				encoding="utf-8",
+			)
+			name = ai_updater._extract_oss_skill_name(repo_root)
+			self.assertEqual(name, "swift-kmp")
+
+	def test_fallback_to_dir_name_when_no_skill_md(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "my-skill"
+			repo_root.mkdir()
+			name = ai_updater._extract_oss_skill_name(repo_root)
+			self.assertEqual(name, "my-skill")
+
+	def test_fallback_to_dir_name_when_no_frontmatter(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "my-skill"
+			repo_root.mkdir()
+			(repo_root / "SKILL.md").write_text("# No frontmatter here\n", encoding="utf-8")
+			name = ai_updater._extract_oss_skill_name(repo_root)
+			self.assertEqual(name, "my-skill")
+
+	def test_fallback_when_name_field_absent(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "my-skill"
+			repo_root.mkdir()
+			(repo_root / "SKILL.md").write_text("---\ndescription: no name field\n---\n", encoding="utf-8")
+			name = ai_updater._extract_oss_skill_name(repo_root)
+			self.assertEqual(name, "my-skill")
+
+
+class OssIterFilesTests(unittest.TestCase):
+	def test_discovers_skill_and_refs(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "swift-kmp"
+			refs = repo_root / "references"
+			refs.mkdir(parents=True)
+			(repo_root / "SKILL.md").write_text("---\nname: swift-kmp\n---\n", encoding="utf-8")
+			(refs / "architecture.md").write_text("# Arch\n", encoding="utf-8")
+			(refs / "flow-bridging.md").write_text("# Flow\n", encoding="utf-8")
+			(repo_root / "README.md").write_text("# README\n", encoding="utf-8")
+			files = ai_updater._iter_oss_skill_files(repo_root)
+			names = [f.name for f in files]
+			self.assertIn("SKILL.md", names)
+			self.assertIn("architecture.md", names)
+			self.assertIn("flow-bridging.md", names)
+			self.assertNotIn("README.md", names)
+
+	def test_missing_skill_md_returns_empty(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			repo_root = Path(tmp) / "swift-kmp"
+			repo_root.mkdir()
+			files = ai_updater._iter_oss_skill_files(repo_root)
+			self.assertEqual(files, [])
+
+
 if __name__ == "__main__":
 	unittest.main()
