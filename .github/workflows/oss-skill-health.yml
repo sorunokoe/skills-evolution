@@ -10,7 +10,7 @@ name: OSS Skill Health
 #     health:
 #       uses: sorunokoe/skills-evolution/.github/workflows/oss-skill-health.yml@main
 #       secrets:
-#         github_token: ${{ secrets.GITHUB_TOKEN }}
+#         token: ${{ secrets.GITHUB_TOKEN }}
 #
 # No feedback collection step: OSS skill repo PRs are maintainer edits, not agent usage signals.
 
@@ -53,7 +53,7 @@ on:
         type: string
         default: main
     secrets:
-      github_token:
+      token:
         required: true
     outputs:
       findings_count:
@@ -102,7 +102,7 @@ jobs:
         if: inputs.enable_ai_skill_update == true
         env:
           PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
-          GH_TOKEN: ${{ secrets.github_token }}
+          GH_TOKEN: ${{ secrets.token }}
         run: |
           DEPS_ARG=""
           if [[ -n "${{ inputs.tracked_deps }}" ]]; then
@@ -128,7 +128,7 @@ jobs:
       - name: Commit autofixes and open PR
         if: steps.counts.outputs.has_findings == 'true' && inputs.open_pr_on_findings == true
         env:
-          GH_TOKEN: ${{ secrets.github_token }}
+          GH_TOKEN: ${{ secrets.token }}
         run: |
           BRANCH_NAME="skills-health/$(date -u +%Y-%m)"
           git config user.name "github-actions[bot]"
