@@ -146,7 +146,8 @@ jobs:
           echo "Branch pushed: $BRANCH_NAME" >> "$GITHUB_STEP_SUMMARY"
           TITLE="chore(skill): health report $(date -u +%Y-%m)"
           BODY_FILE="outputs/skills-health-summary.md"
-          if gh pr view "$BRANCH_NAME" --json number --jq .number >/dev/null 2>&1; then
+          PR_STATE=$(gh pr view "$BRANCH_NAME" --json state --jq .state 2>/dev/null || echo "NONE")
+          if [ "$PR_STATE" = "OPEN" ]; then
             gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE" \
               && echo "PR updated." >> "$GITHUB_STEP_SUMMARY" || true
           else

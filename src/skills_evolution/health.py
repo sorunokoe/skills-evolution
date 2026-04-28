@@ -866,20 +866,11 @@ def combine_reports(output_dir: Path) -> tuple[int, int]:
 			lines.append("")
 			if applied_patches:
 				for p in applied_patches:
-					old = p.get("old_text", "").strip()
-					new = p.get("new_text", "").strip()
 					reason = p.get("reason", "").strip()
-					lines += [
-						"```diff",
-						f"- {old}",
-						f"+ {new}",
-						"```",
-						f"> {reason}" if reason else "",
-						"",
-					]
+					lines.append(f"- {reason}" if reason else "- version bump")
+				lines.append("")
 			else:
-				# Patch data not available (e.g. legacy report format)
-				lines += [f"_{entry.get('applied', 0)} patch(es) applied — see run artifacts for details._", ""]
+				lines += [f"_{entry.get('applied', 0)} patch(es) applied — see Files changed tab._", ""]
 
 	# --- Structural findings ---
 	structural_count = findings_count - ai_patches_applied
