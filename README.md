@@ -371,3 +371,16 @@ PYTHONPATH=src python3 -m skills_evolution.cli write \
   --line-end 5 \
   --reason "Smoke test"
 ```
+
+---
+
+## Skills using skills-evolution
+
+Open-source AI skill repos governed by this toolkit:
+
+| Skill | What it covers | Repo |
+|-------|---------------|------|
+| **swift-kmp** | KMP ↔ Swift bridge patterns — interactors, `SkieSwiftFlow` → `AsyncStream`, type mapping, `KotlinThrowable` containment | [sorunokoe/swift-kmp-skill](https://github.com/sorunokoe/swift-kmp-skill) |
+| **swiftui-compose** | Bidirectional Compose Multiplatform ↔ SwiftUI interop — `UIViewControllerRepresentable`, coordinator, state sharing | [sorunokoe/swiftui-compose-skill](https://github.com/sorunokoe/swiftui-compose-skill) |
+
+> Maintaining an open-source skill? Add the `maintained by skills-evolution` badge and the OSS workflows — see [For open-source skill maintainers](#for-open-source-skill-maintainers) above.
