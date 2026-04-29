@@ -216,14 +216,16 @@ jobs:
         run: |
           TITLE="${{ steps.task.outputs.task_number }} - Skills health report $(date -u +%Y-%m)"
           BODY_FILE="outputs/skills-health-summary.md"
-          if gh pr view "$BRANCH_NAME" --json number --jq .number >/dev/null 2>&1; then
-            gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE"
+          PR_STATE=$(gh pr view "$BRANCH_NAME" --json state --jq .state 2>/dev/null || echo "NONE")
+          if [ "$PR_STATE" = "OPEN" ]; then
+            gh pr edit "$BRANCH_NAME" --title "$TITLE" --body-file "$BODY_FILE" || true
           else
             gh pr create \
               --title "$TITLE" \
               --body-file "$BODY_FILE" \
               --base main \
-              --head "$BRANCH_NAME"
+              --head "$BRANCH_NAME" \
+              || echo "⚠️ PR creation skipped — enable 'Allow GitHub Actions to create pull requests' in repo Settings → Actions → General." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload artifacts
