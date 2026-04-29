@@ -62,7 +62,7 @@ on:
         type: string
         default: main
     secrets:
-      github_token:
+      token:
         required: true
       copilot_token:
         required: false
@@ -115,7 +115,7 @@ jobs:
       - name: Collect PR feedback data
         env:
           PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
-          GH_TOKEN: ${{ secrets.github_token }}
+          GH_TOKEN: ${{ secrets.token }}
         run: |
           python3 -m skills_evolution.health collect-feedback \
             --repo "${{ github.repository }}" \
@@ -136,7 +136,7 @@ jobs:
         if: inputs.enable_ai_skill_update == true
         env:
           PYTHONPATH: ${{ github.workspace }}/.skills-evolution/src
-          GH_TOKEN: ${{ secrets.github_token }}
+          GH_TOKEN: ${{ secrets.token }}
         run: |
           DEPS_ARG=""
           if [[ -n "${{ inputs.tracked_deps }}" ]]; then
@@ -212,7 +212,7 @@ jobs:
       - name: Create or update monthly PR
         if: steps.counts.outputs.has_findings == 'true' && inputs.open_pr_on_findings == true && steps.task.outputs.task_valid == 'true' && env.NO_CHANGES != 'true'
         env:
-          GH_TOKEN: ${{ secrets.github_token }}
+          GH_TOKEN: ${{ secrets.token }}
         run: |
           TITLE="${{ steps.task.outputs.task_number }} - Skills health report $(date -u +%Y-%m)"
           BODY_FILE="outputs/skills-health-summary.md"
