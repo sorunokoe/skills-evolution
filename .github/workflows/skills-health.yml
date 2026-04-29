@@ -90,12 +90,12 @@ jobs:
       has_findings: ${{ steps.counts.outputs.has_findings }}
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Checkout skills-evolution tools
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ inputs.tools_repo }}
           ref: ${{ inputs.tools_ref }}
@@ -152,7 +152,7 @@ jobs:
 
       - name: Set up Node.js for optional AI review
         if: inputs.enable_ai_review == true
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
 
       - name: Install Copilot CLI
         if: inputs.enable_ai_review == true
@@ -227,7 +227,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: skills-health-${{ github.run_id }}
           path: outputs/
